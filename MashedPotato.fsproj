@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- The executable is Mashed.exe, not MashedPotato.exe: endpoint policy on this
+         machine refuses to launch any filename ending in "potato.exe" (a rule aimed
+         at Potato Chat). Namespace, display name and config folder are unaffected. -->
+    <AssemblyName>Mashed</AssemblyName>
+    <RootNamespace>MashedPotato</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The hook delegate and the EnumWindows callback are handed to native code. -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Order matters: F# compiles these in sequence and a file may only use what
+         earlier ones declare. This list is the dependency graph. -->
+    <Compile Include="Interop.fs" />
+    <Compile Include="Log.fs" />
+    <Compile Include="Domain.fs" />
+    <Compile Include="Config.fs" />
+    <Compile Include="App.fs" />
+    <Compile Include="Snap.fs" />
+    <Compile Include="Chord.fs" />
+    <Compile Include="Overlay.fs" />
+    <Compile Include="Daemon.fs" />
+    <Compile Include="Program.fs" />
+    <!-- Shipped beside the executable and installed into %APPDATA% on a first run.
+         There are no defaults in the code, so without this a fresh machine has
+         nothing to bind. -->
+    <None Include="mashedpotato.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

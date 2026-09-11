@@ -1,0 +1,175 @@
+{
+  "launcher": {
+    "prefix": "Ctrl+K",
+    "passThroughIn": [],
+    "apps": [
+      {
+        "key": "Y",
+        "name": "Spotify",
+        "processName": "Spotify",
+        "paths": [
+          "%APPDATA%\\Spotify\\Spotify.exe"
+        ],
+        "shellFallback": "spotify:"
+      },
+      {
+        "key": "C",
+        "name": "Chrome",
+        "processName": "chrome",
+        "paths": [
+          "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+          "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe",
+          "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+        ],
+        "shellFallback": "chrome.exe"
+      },
+      {
+        "key": "T",
+        "name": "Windows Terminal",
+        "processName": "WindowsTerminal",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\WindowsApps\\wt.exe"
+        ],
+        "shellFallback": "wt.exe"
+      },
+      {
+        "key": "V",
+        "name": "VS Code",
+        "processName": "Code",
+        "paths": [
+          "C:\\Users\\wyattd\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"
+        ],
+        "shellFallback": "Code.exe"
+      },
+      {
+        "key": "E",
+        "name": "Explorer",
+        "processName": "explorer",
+        "paths": [
+          "C:\\Windows\\explorer.exe"
+        ],
+        "shellFallback": "explorer.exe"
+      },
+      {
+        "key": "I",
+        "name": "Signal",
+        "processName": "Signal",
+        "paths": [
+          "C:\\Users\\wyattd\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe"
+        ],
+        "shellFallback": "Signal.exe"
+      }
+    ]
+  },
+  "placement": {
+    "prefix": "Ctrl+Shift+Alt",
+    "nextMonitor": "Z",
+    "zones": [
+      {
+        "key": "H",
+        "name": "Left two thirds",
+        "side": "left",
+        "width": "2/3",
+        "height": "1"
+      },
+      {
+        "key": "L",
+        "name": "Right third",
+        "side": "right",
+        "width": "1/3",
+        "height": "1"
+      },
+      {
+        "key": "C",
+        "name": "Centered",
+        "side": "center",
+        "width": "3/4",
+        "height": "3/4"
+      },
+      {
+        "key": "M",
+        "name": "Max",
+        "side": "center",
+        "width": "1",
+        "height": "1"
+      },
+      {
+        "key": "K",
+        "name": "Top",
+        "side": "top",
+        "width": "1",
+        "height": "1/2"
+      },
+      {
+        "key": "J",
+        "name": "Bottom",
+        "side": "bottom",
+        "width": "1",
+        "height": "1/2"
+      },
+      {
+        "key": "I",
+        "name": "Center Middle",
+        "side": "center",
+        "width": "1/2",
+        "height": "1"
+      },
+      {
+        "key": "E",
+        "name": "Left Half",
+        "side": "left",
+        "width": "1/2",
+        "height": "1"
+      },
+      {
+        "key": "R",
+        "name": "Right Half",
+        "side": "right",
+        "width": "1/2",
+        "height": "1"
+      },
+      {
+        "key": "]",
+        "name": "Top Right",
+        "side": "topright",
+        "width": "1/3",
+        "height": "1/2"
+      },
+      {
+        "key": "[",
+        "name": "Top Left",
+        "side": "topleft",
+        "width": "2/3",
+        "height": "1/2"
+      },
+      {
+        "key": ";",
+        "name": "Bottom Left",
+        "side": "bottomleft",
+        "width": "2/3",
+        "height": "1/2"
+      },
+      {
+        "key": "'",
+        "name": "Bottom Right",
+        "side": "bottomright",
+        "width": "1/3",
+        "height": "1/2"
+      },
+      {
+        "key": "P",
+        "name": "Right two thirds",
+        "side": "right",
+        "width": "2/3",
+        "height": "1"
+      },
+      {
+        "key": "O",
+        "name": "Left third",
+        "side": "left",
+        "width": "1/3",
+        "height": "1"
+      }
+    ]
+  }
+}
