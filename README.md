@@ -287,6 +287,27 @@ window when they are all minimized. `Interop.topLevelWindows` gets Z-order from
 merely happens to come back in that order. Z-order is what makes "the Chrome
 window you were last using" win.
 
+### Focusing without flickering the taskbar
+
+Foreground rights are borrowed **before** the first `SetForegroundWindow`, not after
+it fails. The order matters for a reason that is invisible in code review:
+
+A refused `SetForegroundWindow` does not fail quietly. Windows flashes the target's
+taskbar button instead - and an auto-hide taskbar slides out to show that flash
+before hiding again. Since the `AttachThreadInput` fallback then succeeded, the
+window ended up focused either way, so the old try-then-fall-back order looked
+correct and merely made the taskbar flicker on every switch. On both monitors: each
+display has its own taskbar window, `Shell_TrayWnd` and `Shell_SecondaryTrayWnd`.
+
+Measured by polling each taskbar window's rectangle while driving a real chord. An
+auto-hidden taskbar sits at `top = 1078` on a 1080-tall screen, with two pixels
+showing, and slides to `1032` when revealed:
+
+| | `SetForegroundWindow` | taskbars |
+|---|---|---|
+| try, then fall back | returned `False` | `1078 -> 1032` **revealed** |
+| borrow, then call | returns `True` | `1078 -> 1078` stay hidden |
+
 ## Snapping a window
 
 Snaps are plain hotkeys, checked before the chord state machine. Their modifiers

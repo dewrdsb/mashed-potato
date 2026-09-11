@@ -62,25 +62,32 @@ let private pick windows =
 let private focus (hwnd: nativeint) =
     ShowWindow(hwnd, (if IsIconic(hwnd) then SW_RESTORE else SW_SHOW)) |> ignore
 
-    if not (SetForegroundWindow(hwnd)) then
-        // Windows refuses foreground changes from a process that has not seen
-        // recent input; borrowing the foreground thread's input queue gets around it.
-        //
-        // Why this works: the restriction is enforced per input queue. Attaching
-        // our thread's queue to the current foreground thread's makes Windows treat
-        // us as part of the same input context, so the call is allowed. Attaching
-        // is symmetric and must be undone immediately - leaving threads attached
-        // makes both of them hang on each other's input.
-        let mutable unused = 0u
-        let foreignThread = GetWindowThreadProcessId(GetForegroundWindow(), &unused)
-        let ownThread = GetCurrentThreadId()
+    // Windows refuses foreground changes from a process that has not seen recent
+    // input, so borrow the current foreground thread's input queue first. The
+    // restriction is enforced per input queue: attaching ours to theirs makes Windows
+    // treat us as part of the same input context, and the call is allowed. Attaching
+    // is symmetric and must be undone immediately - leaving two threads attached makes
+    // each wait on the other's input.
+    //
+    // Doing this *before* the first attempt rather than after a failure is what stops
+    // the taskbar flickering. A refused SetForegroundWindow does not fail quietly:
+    // Windows flashes the target's taskbar button instead, and an auto-hide taskbar
+    // slides out to show the flash before hiding again. The window still ends up
+    // focused either way, so the old order looked correct and merely flickered.
+    let mutable unused = 0u
+    let foreignThread = GetWindowThreadProcessId(GetForegroundWindow(), &unused)
+    let ownThread = GetCurrentThreadId()
 
-        if foreignThread <> 0u
-           && foreignThread <> ownThread
-           && AttachThreadInput(ownThread, foreignThread, true) then
-            BringWindowToTop(hwnd) |> ignore
-            SetForegroundWindow(hwnd) |> ignore
-            AttachThreadInput(ownThread, foreignThread, false) |> ignore
+    let borrowed =
+        foreignThread <> 0u
+        && foreignThread <> ownThread
+        && AttachThreadInput(ownThread, foreignThread, true)
+
+    BringWindowToTop(hwnd) |> ignore
+    SetForegroundWindow(hwnd) |> ignore
+
+    if borrowed then
+        AttachThreadInput(ownThread, foreignThread, false) |> ignore
 
 let private launch (target: Target) =
     let command =
