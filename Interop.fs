@@ -266,6 +266,25 @@ extern bool SetWindowPos(nativeint hwnd, nativeint insertAfter, int x, int y, in
 [<DllImport("user32.dll")>]
 extern bool BringWindowToTop(nativeint hwnd)
 
+/// A rounded-rectangle region. The last two arguments are the *diameters* of the
+/// ellipse used for the corners, not the radii. gdi32 is the old drawing API, below
+/// GDI+ and WinForms; regions are one of the few parts of it still worth reaching for.
+[<DllImport("gdi32.dll")>]
+extern nativeint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse)
+
+[<DllImport("gdi32.dll")>]
+extern bool DeleteObject(nativeint handle)
+
+/// Restricts a window to a region: anything outside it is not drawn and not clicked,
+/// child controls included. Non-zero is success.
+///
+/// The ownership rule is unusual and worth stating. On success the *system* takes
+/// the region handle - it must not be deleted, reused, or passed to SetWindowRgn
+/// again, and the previously set region is freed by Windows. On failure it is still
+/// ours, and leaking it leaks a GDI object.
+[<DllImport("user32.dll")>]
+extern int SetWindowRgn(nativeint hwnd, nativeint region, bool redraw)
+
 /// Changes which monitors make up the desktop. Unlike most of user32 it returns a
 /// Win32 error code directly rather than a bool - zero is success. With null path
 /// and mode arrays it applies a remembered topology; that is the whole of what

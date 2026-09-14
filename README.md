@@ -448,6 +448,41 @@ The border is `Padding` on the form rather than any custom painting: the form's
 padding. `Overlay.inner` subtracts it before fitting the font, so the text sizes
 to the cyan area rather than the whole window.
 
+The corners are rounded by `SetWindowRgn`, not by painting. A window region is the
+shape Windows lets the window occupy at all - everything outside it is neither drawn
+nor clickable. It is remade only when the banner's *size* changes, for the same reason
+the font is: it is a GDI object, and the banner moves between monitors far more often
+than it changes size.
+
+Both edges of the border are rounded, which takes two regions rather than one. A
+region applies to a child control exactly as it does to a top-level window, so the
+caption gets its own: clipping its corners lets the form behind it - the orange - show
+through them. The inner radius is the outer minus the border width, which is what
+makes the two arcs concentric and keeps the ring a uniform 20px the whole way round.
+Any larger and it pinches thin at the corners, any smaller and it bulges:
+
+| | radius | size |
+|---|---|---|
+| banner | 26 | 1440x216 |
+| caption | 6 | 1400x176 |
+
+They are applied together and latched together - a rounded outside around a square
+inside reads as a bug rather than as a style, so a refusal of either is retried on the
+next show.
+
+Two things to know about it:
+
+* **The system takes ownership on success.** After `SetWindowRgn` returns non-zero the
+  region handle belongs to Windows - it must not be deleted or set again, and Windows
+  frees whatever region was there before. On *failure* it is still ours, and a missing
+  `DeleteObject` on that path leaks a GDI object every time the banner is shown.
+
+* **There is no antialiasing.** A region clips whole pixels, so the arcs are stepped
+  rather than smooth. At a 26px radius against a 20px orange border it reads as
+  rounded; up close the steps are visible. Smooth corners would need a layered window
+  drawn with per-pixel alpha (`UpdateLayeredWindow`), which is a different design for
+  this module - the border would stop being `Padding` and become something painted.
+
 Two things about it matter more than they look:
 
 * **`WS_EX_NOACTIVATE`, plus a `ShowWithoutActivation` override.** If the banner

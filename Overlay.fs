@@ -36,6 +36,18 @@ let private Message = "App Switcher"
 [<Literal>]
 let private BorderWidth = 20
 
+/// Corner radius of the banner itself.
+[<Literal>]
+let private CornerRadius = 26
+
+/// Corner radius of the cyan area inside the border.
+///
+/// Outer minus the border width is what makes the two arcs concentric, and concentric
+/// is what keeps the orange ring the same 20px thickness the whole way round. Any
+/// larger and the border pinches thin at the corners; any smaller and it bulges.
+[<Literal>]
+let private InnerCornerRadius = CornerRadius - BorderWidth
+
 /// Borderless, topmost, and never activated. WS_EX_NOACTIVATE earns its keep: if
 /// this window took the foreground, App.activate's foreground test would see
 /// Mashed Potato instead of the app being toggled and the minimize branch would never
@@ -63,6 +75,7 @@ type private Banner() =
 let mutable private banner : Form = null
 let mutable private caption : Label = null
 let mutable private fittedFor = Size.Empty
+let mutable private roundedFor = Size.Empty
 
 /// The area inside the border - what the caption actually gets to use.
 let private inner (box: Size) =
@@ -101,6 +114,44 @@ let private applyFont (box: Size) =
         caption.Font <- fitted box
         fittedFor <- box
 
+/// Restricts one window to a rounded rectangle of its own size. Returns whether it
+/// took, so a refusal can be retried rather than latched.
+///
+/// A region applies to a child control exactly as it does to a top-level window,
+/// which is what rounds the inside: clipping the caption's corners lets the form
+/// behind it - the orange - show through them.
+let private round (hwnd: nativeint) (box: Size) radius =
+    if radius <= 0 || box.Width <= 0 || box.Height <= 0 then
+        false
+    else
+        // CreateRoundRectRgn's lower-right corner is exclusive, hence the + 1, and
+        // its last two arguments are diameters where radius is a radius.
+        match CreateRoundRectRgn(0, 0, box.Width + 1, box.Height + 1, radius * 2, radius * 2) with
+        | 0n -> false
+        | region ->
+            if SetWindowRgn(hwnd, region, true) <> 0 then
+                true
+            else
+                // Refused, so the handle is still ours and would otherwise leak a
+                // GDI object on every attempt.
+                DeleteObject region |> ignore
+                false
+
+/// Rounds the banner and the cyan area inside it. Re-made only when the size changes,
+/// like the font: a region is a GDI object, and the banner moves between monitors far
+/// more often than it resizes.
+///
+/// There is no antialiasing here - a window region clips whole pixels, so the arcs
+/// are stepped rather than smooth. Genuinely smooth corners would mean a layered
+/// window drawn with per-pixel alpha, which is a different module.
+let private applyCorners (box: Size) =
+    if box <> roundedFor then
+        // Latched only when both took: a rounded outside around a square inside
+        // reads as a bug rather than as a style.
+        let outside = round banner.Handle box CornerRadius
+        let inside = round caption.Handle (inner box) InnerCornerRadius
+        if outside && inside then roundedFor <- box
+
 /// Across the bottom of whichever screen holds the foreground window: three
 /// quarters of the width, centred, one fifth of the height. WorkingArea rather
 /// than Bounds, so it sits above the taskbar instead of over it.
@@ -135,7 +186,10 @@ let create () =
 
     banner.Controls.Add(caption)
     applyFont (inner banner.Bounds.Size)
+
+    // The region needs a real HWND, so it has to follow the handle, not precede it.
     banner.Handle |> ignore
+    applyCorners banner.Bounds.Size
     banner
 
 /// Setting Visible is enough to keep this from stealing focus: Form.SetVisibleCore
@@ -152,6 +206,7 @@ let setVisible visible =
             banner.Bounds <- bounds
 
         applyFont (inner bounds.Size)
+        applyCorners bounds.Size
         banner.Visible <- true
     else
         banner.Visible <- false
