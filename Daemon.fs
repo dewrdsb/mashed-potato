@@ -19,6 +19,16 @@ open System.Windows.Forms
 // of it. There is no visible main window - the banner is shown and hidden, and
 // nothing else ever appears.
 
+/// The .ico is embedded rather than read from beside the executable: a tray icon
+/// that depends on a loose file is one missing file away from a blank square.
+/// Icon(stream, size) picks the frame nearest the size asked for, and the shell
+/// wants SmallIconSize - 16px at 100% scaling, 20 at 125%, 24 at 150%, which is
+/// why the file carries a frame at each.
+let private trayIcon () =
+    let assembly = Reflection.Assembly.GetExecutingAssembly()
+    use stream = assembly.GetManifestResourceStream("mashed.ico")
+    new Icon(stream, SystemInformation.SmallIconSize)
+
 /// Prefer the character a key types, so the menu reads "Ctrl+Shift+Alt+[" rather
 /// than "Ctrl+Shift+Alt+OemOpenBrackets". Keys with no character - F1, Escape -
 /// map to 0 and fall back to the enum name.
@@ -169,7 +179,8 @@ let run () =
         |> ignore
         1
     | Ok() ->
-        use tray = new NotifyIcon(Icon = SystemIcons.Application, Visible = true)
+        use icon = trayIcon ()
+        use tray = new NotifyIcon(Icon = icon, Visible = true)
 
         let balloon icon message =
             tray.BalloonTipTitle <- "Mashed Potato"

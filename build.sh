@@ -18,7 +18,8 @@ STAGE_DIR="$(wslpath -u "$STAGE_WIN")"
 
 # dotnet.exe must run from a real drive, not a \\wsl.localhost path, hence staging.
 mkdir -p "$STAGE_DIR"
-cp "$SRC_DIR"/*.fs "$SRC_DIR/MashedPotato.fsproj" "$SRC_DIR/mashedpotato.json" "$STAGE_DIR/"
+cp "$SRC_DIR"/*.fs "$SRC_DIR/MashedPotato.fsproj" "$SRC_DIR/mashedpotato.json" \
+   "$SRC_DIR/mashed.ico" "$STAGE_DIR/"
 
 cd "$STAGE_DIR"
 "$DOTNET" publish MashedPotato.fsproj -c Release -o "$INSTALL_WIN" --nologo

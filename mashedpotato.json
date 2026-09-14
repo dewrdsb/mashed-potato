@@ -13,6 +13,17 @@
         "shellFallback": "spotify:"
       },
       {
+        "key": "F",
+        "name": "Chrome",
+        "processName": "chrome",
+        "paths": [
+          "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+          "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe",
+          "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+        ],
+        "shellFallback": "chrome.exe"
+      },
+      {
         "key": "C",
         "name": "Chrome",
         "processName": "chrome",
@@ -51,13 +62,22 @@
         "shellFallback": "explorer.exe"
       },
       {
-        "key": "I",
-        "name": "Signal",
-        "processName": "Signal",
+        "key": "W",
+        "name": "Microsoft Word",
+        "processName": "winword",
         "paths": [
-          "C:\\Users\\wyattd\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe"
+          "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
         ],
-        "shellFallback": "Signal.exe"
+        "shellFallback": "winword.exe"
+      },
+      {
+        "key": "O",
+        "name": "Obsidian",
+        "processName": "obsidian",
+        "paths": [
+          "C:\\Users\\wyattd\\AppData\\Local\\Programs\\Obsidian\\Obsidian.exe"
+        ],
+        "shellFallback": "obsidian.exe"
       }
     ]
   },

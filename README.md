@@ -1,5 +1,7 @@
 # Mashed Potato
 
+<img src=icon/artwork.jpg width=480px/>
+
 Mashed Potato is a keyboard driven daemon that provides two specific features:
 
 1. App launcher, switcher, toggler.
@@ -101,7 +103,9 @@ At startup a bad file means nothing is bound. A bad **reload** keeps the previou
 configuration in force rather than unbinding everything mid-session. Either way the
 message goes to a tray balloon and to `mashedpotato.log`.
 
-The one thing not configurable is `Escape`, which always dismisses the banner.
+The one thing not configurable is what an unbound key does while the banner is
+up: `Escape`, the prefix again and any other unbound key all dismiss it, and
+none of them reach the window underneath.
 
 > **A note on the executable name.** The binary is `Mashed.exe`, not
 > `MashedPotato.exe`. Endpoint security on this machine refuses to launch any
@@ -163,6 +167,9 @@ design review.
 | 9 | `Overlay.fs` | the on-screen banner |
 | 10 | `Daemon.fs` | tray icon, message pump, assembly |
 | 11 | `Program.fs` | entry point |
+
+Two files beside them are not code: `mashed.ico`, and `icon/` holding the artwork it
+was made from together with the script that makes it. See [The icon](#the-icon).
 
 Each file declares a top-level module - `module MashedPotato.Snap` - rather than a
 namespace with a module nested inside it. Both are idiomatic; the top-level form
@@ -566,6 +573,62 @@ happens, which is what makes it look intermittent.
   no console and no window of its own fails invisibly; this is the only reason the
   font bug above was diagnosable rather than guessed at.
 
+## The icon
+
+The artwork - `icon/artwork.jpg` - is a cartoon on a sheet of graph paper: landscape,
+outlined, spattered with chunks, and with *SMASH!* lettered on the hammer. Nothing
+about that survives a 16px tray icon on its own terms, so `icon/build-icon.py` turns
+it into `mashed.ico` in three steps.
+
+**Keying out the paper.** Not a threshold on brightness, which would also hollow out
+the white puffs of smoke inside the drawing, but a flood fill inwards from the
+border over pixels that are both pale and unsaturated. Only paper the border can
+reach is removed; anything the ink encloses stays. The fill is then grown two pixels
+into the drawing, because the ring just inside an outline is JPEG-pale and reads as
+a white halo the moment the icon sits on a dark taskbar.
+
+**Two crops, not one.** The source is 1408x768 and an icon is square, so something
+has to go either way:
+
+| | Crop | Sizes | Keeps |
+|---|---|---|---|
+| wide | 660px at (330, 90) | 40 and up | the whole scene - potato, hammer, handle, flying chunks, the lettering |
+| tight | 560px at (420, 130) | 32 and below | the potato and the hammer head, and nothing else |
+
+The wide crop is legible down to about 48px and turns to noise below it: at 24px the
+chunks and the handle are single scattered pixels that read as dirt around the
+subject rather than as anything. The tight crop throws all of that away to buy about
+20% more size for the two shapes that still carry meaning at 16px - a gold potato
+and a dark hammer head driven into it.
+
+**Downsampling.** A box filter over *premultiplied* alpha. Averaging straight RGBA
+lets the colour of transparent pixels - black, here - bleed into every edge, which
+at these sizes is most of the icon; premultiplying weights each pixel's colour by
+its own alpha, so a pixel that is not there contributes nothing but transparency.
+
+The file carries nine frames: 16, 20, 24, 32, 40, 48, 64, 128, 256. The first three
+are the tray at 100%, 125% and 150% scaling, which is the whole reason for the
+unusual 20 and 24. Frames up to 64 are stored as DIBs and the two largest as PNG,
+which is what every icon since Vista does - a 256x256 BGRA bitmap is a megabyte
+uncompressed, and the format has allowed a PNG in that slot since precisely the
+release that introduced the size.
+
+`System.Drawing` will not hand back the 256 frame - ask it for 256 and it returns
+the 128 - but the shell reads it, and nothing in this program asks for either.
+
+To rebuild after editing the artwork:
+
+    python3 icon/build-icon.py
+
+Pure standard library, and roughly a second. The one thing it shells out for is
+decoding the JPEG, which `powershell.exe` and `System.Drawing` do: Python has no
+JPEG decoder in the standard library, and the alternative is a dependency for one
+call. `build.sh` copies `mashed.ico` to the staging directory alongside the sources;
+the `.fsproj` both sets it as `ApplicationIcon` and embeds it, which are two
+different things - the first is what Explorer and the taskbar read off the file, the
+second is what `Daemon.trayIcon` reads at run time. A tray icon loaded from a loose
+file beside the executable is one missing file away from a blank square.
+
 ## Known limits
 
 * `Ctrl+K` is swallowed globally unless the foreground process is listed in
@@ -586,5 +649,8 @@ happens, which is what makes it look intermittent.
   AutoHotkey has the same constraint.
 * Synthetic keystrokes are ignored on purpose (`LLKHF_INJECTED`), so the chord
   will not fire from remapping software such as PowerToys Keyboard Manager.
+* `ExtractAssociatedIcon` on `Mashed.exe` returns 32x32 whatever the caller asks
+  for. It is not used here - the tray reads the embedded copy - but it is the
+  obvious thing to reach for, and it quietly ignores the other eight frames.
 * Only one Mashed Potato runs at a time; the C# and F# builds share a mutex name, so
   whichever starts second exits silently.

@@ -158,6 +158,13 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
                             handlers.CycleDisplay()
                             swallow
 
+                        // An unmapped key still ends a chord that is open: the
+                        // banner comes down and the keystroke stops here rather than
+                        // reaching the window underneath.
+                        | None when armed ->
+                            takeBannerDown ()
+                            swallow
+
                         | None -> passOn ()
 
                     elif armed then
@@ -172,17 +179,14 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
                             handlers.Toggle target
                             swallow
 
+                        // Nothing is bound to this key, so it belongs to the chord
+                        // rather than to the application: Escape, the prefix again
+                        // and every other key alike dismiss the banner and stop
+                        // here. Passing the key on instead let a mistyped chord fire
+                        // whatever that key means in the window underneath.
                         | None ->
                             disarm ()
-
-                            // Escape, or the prefix again, dismisses and swallows the
-                            // key. Anything else cancels the chord and goes on to the
-                            // application, as an unrecognised key should.
-                            if vk = int Keys.Escape
-                               || (held = launcher.Prefix.Modifiers && launcher.Prefix.Key = Some vk) then
-                                swallow
-                            else
-                                passOn ()
+                            swallow
 
                     elif held = launcher.Prefix.Modifiers
                          && launcher.Prefix.Key = Some vk

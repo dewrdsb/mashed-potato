@@ -8,6 +8,7 @@
          machine refuses to launch any filename ending in "potato.exe" (a rule aimed
          at Potato Chat). Namespace, display name and config folder are unaffected. -->
     <AssemblyName>Mashed</AssemblyName>
+    <ApplicationIcon>mashed.ico</ApplicationIcon>
     <RootNamespace>MashedPotato</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
@@ -33,6 +34,11 @@
          There are no defaults in the code, so without this a fresh machine has
          nothing to bind. -->
     <None Include="mashedpotato.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Embedded as well as set as the ApplicationIcon: the first gives the file its
+         icon in Explorer and on the taskbar, the second is what the tray reads at
+         run time. Named explicitly, because the default logical name is derived
+         from RootNamespace and is easy to get wrong from the other side. -->
+    <EmbeddedResource Include="mashed.ico" LogicalName="mashed.ico" />
   </ItemGroup>
 
 </Project>
