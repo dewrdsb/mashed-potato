@@ -1,4 +1,4 @@
-// 4 of 10 - reading mashedpotato.json
+// 4 of 11 - reading mashedpotato.json
 //
 // The only place that knows the file format. Turns JSON into the Domain types, and
 // holds the settings currently in force.
@@ -50,6 +50,7 @@ module Dto =
     type Placement =
         { prefix : JsonElement
           nextMonitor : string
+          cycleDisplay : string
           zones : Zone array }
 
     [<CLIMutable>]
@@ -230,6 +231,11 @@ let private interpret (root: Dto.Root) =
             match (if isNull root.placement.nextMonitor then "" else root.placement.nextMonitor.Trim()) with
             | "" | "none" -> None
             | given -> Some(keyCode "placement nextMonitor" given)
+
+          CycleDisplayVk =
+            match (if isNull root.placement.cycleDisplay then "" else root.placement.cycleDisplay.Trim()) with
+            | "" | "none" -> None
+            | given -> Some(keyCode "placement cycleDisplay" given)
 
           Zones =
             orEmpty root.placement.zones

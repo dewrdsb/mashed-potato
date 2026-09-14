@@ -1,4 +1,4 @@
-// 5 of 10 - launching, focusing and minimizing an application
+// 5 of 11 - launching, focusing and minimizing an application
 //
 // Finding the window that belongs to an app, which is harder than it sounds, and
 // deciding what to do with it.

@@ -24,6 +24,7 @@
     <Compile Include="Config.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Snap.fs" />
+    <Compile Include="Display.fs" />
     <Compile Include="Chord.fs" />
     <Compile Include="Overlay.fs" />
     <Compile Include="Daemon.fs" />

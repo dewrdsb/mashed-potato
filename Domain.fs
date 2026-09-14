@@ -1,4 +1,4 @@
-// 3 of 10 - the shapes everything else is written in
+// 3 of 11 - the shapes everything else is written in
 //
 // Pure data: no Windows, no JSON, no behaviour. Config parses into these, and the
 // rest of the program reads them.
@@ -80,7 +80,8 @@ type Launcher =
 type Placement =
     { Prefix : Prefix
       Zones : Zone list
-      NextMonitorVk : int option }
+      NextMonitorVk : int option
+      CycleDisplayVk : int option }
 
 type Settings =
     { Launcher : Launcher

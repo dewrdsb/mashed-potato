@@ -1,4 +1,4 @@
-// 9 of 10 - assembling the program
+// 10 of 11 - assembling the program
 //
 // Tray icon, hidden message-pump window, hook installation and the message loop.
 // The first file that knows about all the others.
@@ -81,6 +81,10 @@ let private buildTrayMenu (onReload: unit -> unit) =
         | Some vk -> caption $"{prefixText settings.Placement.Prefix}+{keyName vk}   →   Next monitor"
         | None -> ()
 
+        match settings.Placement.CycleDisplayVk with
+        | Some vk -> caption $"{prefixText settings.Placement.Prefix}+{keyName vk}   →   Cycle display"
+        | None -> ()
+
     menu.Items.Add(new ToolStripSeparator()) |> ignore
 
     let edit = new ToolStripMenuItem("Edit config...")
@@ -152,7 +156,8 @@ let run () =
         { Toggle = fun target -> onLoop (fun () -> App.activate target)
           Prompt = fun visible -> onLoop (fun () -> Overlay.setVisible visible)
           SnapTo = fun zone -> onLoop (fun () -> Snap.toZone zone)
-          NextMonitor = fun () -> onLoop Snap.toNextMonitor }
+          NextMonitor = fun () -> onLoop Snap.toNextMonitor
+          CycleDisplay = fun () -> onLoop Display.cycle }
 
     match Chord.install handlers with
     | Error code ->

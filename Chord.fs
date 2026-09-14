@@ -1,4 +1,4 @@
-// 7 of 10 - the keyboard hook
+// 8 of 11 - the keyboard hook
 //
 // The only part that sees keystrokes. Decides what a key means and hands the work
 // to callbacks rather than doing it here.
@@ -47,7 +47,8 @@ type Handlers =
     { Toggle : Target -> unit
       Prompt : bool -> unit
       SnapTo : Zone -> unit
-      NextMonitor : unit -> unit }
+      NextMonitor : unit -> unit
+      CycleDisplay : unit -> unit }
 
 // These are module level - effectively static fields - for a reason that catches
 // everyone once. Handing a delegate to a C API passes a raw function pointer, and
@@ -150,6 +151,11 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
                         | None when placement.NextMonitorVk = Some vk ->
                             takeBannerDown ()
                             handlers.NextMonitor()
+                            swallow
+
+                        | None when placement.CycleDisplayVk = Some vk ->
+                            takeBannerDown ()
+                            handlers.CycleDisplay()
                             swallow
 
                         | None -> passOn ()

@@ -1,4 +1,4 @@
-// 1 of 10 - the Windows API
+// 1 of 11 - the Windows API
 //
 // ---------------------------------------------------------------------------------
 // A primer, if you know F# but not .NET or Windows
@@ -167,6 +167,20 @@ let MAPVK_VK_TO_CHAR = 2u
 [<Literal>]
 let PROCESS_QUERY_LIMITED_INFORMATION = 0x1000u
 
+// SetDisplayConfig's flags. SDC_APPLY means "do it", and exactly one SDC_TOPOLOGY_*
+// says which arrangement to put on. Windows remembers a monitor layout per topology,
+// so naming one is enough - there is no need to describe the displays.
+[<Literal>]
+let SDC_TOPOLOGY_INTERNAL = 0x00000001u
+[<Literal>]
+let SDC_TOPOLOGY_CLONE = 0x00000002u
+[<Literal>]
+let SDC_TOPOLOGY_EXTEND = 0x00000004u
+[<Literal>]
+let SDC_TOPOLOGY_EXTERNAL = 0x00000008u
+[<Literal>]
+let SDC_APPLY = 0x00000080u
+
 // ---- the Windows API itself --------------------------------------------------
 //
 // Each of these is a C function living in a Windows DLL. [<DllImport>] names the
@@ -251,6 +265,13 @@ extern bool ShowWindow(nativeint hwnd, int cmd)
 extern bool SetWindowPos(nativeint hwnd, nativeint insertAfter, int x, int y, int cx, int cy, uint32 flags)
 [<DllImport("user32.dll")>]
 extern bool BringWindowToTop(nativeint hwnd)
+
+/// Changes which monitors make up the desktop. Unlike most of user32 it returns a
+/// Win32 error code directly rather than a bool - zero is success. With null path
+/// and mode arrays it applies a remembered topology; that is the whole of what
+/// Display.cycle needs, so the two array parameters are always zero here.
+[<DllImport("user32.dll")>]
+extern int SetDisplayConfig(uint32 numPathArrayElements, nativeint pathArray, uint32 numModeInfoArrayElements, nativeint modeInfoArray, uint32 flags)
 
 // The foreground window - the one that receives keystrokes. SetForegroundWindow
 // is allowed to fail: Windows only lets a process take focus if it has had recent

@@ -1,4 +1,4 @@
-// 2 of 10 - the log file
+// 2 of 11 - the log file
 //
 // Appends to mashedpotato.log under %LOCALAPPDATA%. A daemon with no console and no
 // window of its own fails invisibly: without this, anything that goes wrong here is

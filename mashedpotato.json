@@ -64,6 +64,7 @@
   "placement": {
     "prefix": "Ctrl+Shift+Alt",
     "nextMonitor": "Z",
+    "cycleDisplay": "1",
     "zones": [
       {
         "key": "H",

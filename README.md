@@ -32,6 +32,7 @@ Two sections, each with its own prefix:
   "placement": {
     "prefix": "Ctrl+Shift+Alt",
     "nextMonitor": "Z",
+    "cycleDisplay": "1",
     "zones": [
       { "key": "H", "name": "Left two thirds", "side": "left", "width": "2/3", "height": "1" }
     ]
@@ -69,6 +70,7 @@ modifier set - in which case `placement` is tested first.
 |---|---|
 | `launcher.passThroughIn` | process names (no `.exe`) that keep their own prefix key |
 | `placement.nextMonitor` | key that sends the window to the next monitor; omit, or `"none"`, to leave it unbound |
+| `placement.cycleDisplay` | key that switches the desktop to internal-only and back to extend; omit, or `"none"`, to leave it unbound |
 | `key` | the character the key types - `"Y"`, `"["`, `";"`, `"4"` - or a `Keys` name for keys that type nothing: `"F1"`, `"Escape"`, `"NumPad7"`, `"Space"` |
 | `processName` | the **image name**, as shown in Task Manager's *Details* tab - not the app's display name. VS Code is `Code`, not `Visual Studio Code`. A `.exe` suffix is stripped for you |
 | `paths` | launch candidates, first one that exists wins; `%VARS%` are expanded |
@@ -156,10 +158,11 @@ design review.
 | 4 | `Config.fs` | reading `mashedpotato.json` into those types |
 | 5 | `App.fs` | launch / focus / minimize an application |
 | 6 | `Snap.fs` | move and resize the current window |
-| 7 | `Chord.fs` | the keyboard hook and what a key means |
-| 8 | `Overlay.fs` | the on-screen banner |
-| 9 | `Daemon.fs` | tray icon, message pump, assembly |
-| 10 | `Program.fs` | entry point |
+| 7 | `Display.fs` | cycling the desktop topology |
+| 8 | `Chord.fs` | the keyboard hook and what a key means |
+| 9 | `Overlay.fs` | the on-screen banner |
+| 10 | `Daemon.fs` | tray icon, message pump, assembly |
+| 11 | `Program.fs` | entry point |
 
 Each file declares a top-level module - `module MashedPotato.Snap` - rather than a
 namespace with a module nested inside it. Both are idiomatic; the top-level form
@@ -400,6 +403,37 @@ smaller synthetic monitor:
 | full screen | mon1 → mon2 | `1920,0 1920x1080` |
 | 400x150 at 1500,900 | mon1 → 1280x720 | `2800,570 400x150` (clamped on) |
 | 1920x1080 | mon1 → 1280x720 | `1920,0 1280x720` (shrunk) |
+
+## Cycling the display
+
+`Ctrl+Shift+Alt+1` switches the desktop to internal-only, waits two seconds, and puts
+it back to extend.
+
+It exists for one fault. Through a WD22TB4 Thunderbolt dock the external monitor
+intermittently comes up dark: Windows enumerates it, applies a mode, marks it active
+and composes a full desktop onto it - verified by sampling the framebuffer, which held
+1537 distinct colours while the panel showed nothing - and no image ever reaches the
+glass. Nothing is wrong that Windows can see, so nothing retries. Forcing a topology
+change makes the driver re-modeset, and the picture appears.
+
+`SetDisplayConfig` with null path and mode arrays, `SDC_APPLY`, and one
+`SDC_TOPOLOGY_*` flag applies the arrangement Windows remembers for that topology -
+the same route `DisplaySwitch.exe /internal` and `/extend` take, without paying for a
+process launch.
+
+Two details do the work:
+
+* **The pause is load-bearing.** The point is to make the driver tear the link down
+  and train it again; back-to-back calls let it coalesce the pair into no change at
+  all. Two seconds is what was measured to work by hand on the dock this is for.
+
+* **It runs off the UI thread.** The handler arrives on the message loop, which is
+  also the thread the keyboard hook is installed on. Sleeping two seconds there would
+  freeze the tray and the banner, and Windows silently drops a low-level hook that
+  does not return promptly. `Display.cycle` starts the work on the thread pool and
+  returns at once, behind a latch so a second press cannot interleave its own pair of
+  calls and strand the desktop on internal-only - the one state you cannot see well
+  enough to fix.
 
 ## The banner
 
