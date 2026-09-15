@@ -1,4 +1,4 @@
-// 6 of 11 - moving and resizing the current window
+// 6 of 12 - moving and resizing the current window
 //
 // Zone geometry, the invisible border windows carry, and moving between monitors.
 //
@@ -39,7 +39,9 @@ let private allowingForBorder (hwnd: nativeint) (wanted: Rectangle) =
     else
         wanted
 
-let private span (fraction: Fraction) total =
+/// Shared with Layout, so both ways of placing a window round identically: 2/3 and
+/// 1/3 of 1920 are 1280 and 640, and meet with nothing left over.
+let internal span (fraction: Fraction) total =
     total * fraction.Numerator / fraction.Denominator
 
 /// Anchoring End at `total - size` rather than at an accumulated offset is what
@@ -83,7 +85,7 @@ let private clamp low high value = max low (min high value)
 /// Monitors in a stable order. Screen.AllScreens comes back in whatever order
 /// EnumDisplayMonitors produced; sorting by device name (\\.\DISPLAY1,
 /// \\.\DISPLAY2, ...) matches the numbering shown in Display Settings.
-let private orderedScreens () =
+let internal orderedScreens () =
     Screen.AllScreens |> Array.sortBy (fun screen -> screen.DeviceName)
 
 /// Where a window's visible frame lands when it moves between two monitors: same
@@ -104,6 +106,92 @@ let private movedBetween (source: Rectangle) (destination: Rectangle) (frame: Re
 
     Rectangle(left, top, width, height)
 
+/// Put a window's *visible* frame exactly here. Shared by snapping and by layouts,
+/// which is what keeps the invisible-border correction in one place.
+let place (hwnd: nativeint) (wanted: Rectangle) =
+    // A maximized window ignores SetWindowPos geometry, so it has to come out of
+    // that state first or the call appears to do nothing.
+    if IsZoomed(hwnd) then ShowWindow(hwnd, SW_RESTORE) |> ignore
+
+    let placed = allowingForBorder hwnd wanted
+
+    SetWindowPos(hwnd, 0n, placed.X, placed.Y, placed.Width, placed.Height,
+                 SWP_NOZORDER ||| SWP_NOACTIVATE)
+    |> ignore
+
+/// rcNormalPosition is in *workspace* coordinates: screen coordinates offset by the
+/// origin of the primary monitor's work area. With the taskbar at the bottom, or
+/// auto-hidden as it is here, that origin is (0, 0) and the two are identical -
+/// which is exactly why the correction is easy to leave out and never notice. It
+/// only starts to matter with the taskbar docked to the top or the left.
+let private workspaceOrigin () =
+    let primary = Screen.PrimaryScreen.WorkingArea
+    primary.Left, primary.Top
+
+/// Move a *minimized* window to another monitor by rewriting where it will come
+/// back to, rather than by restoring it and moving it.
+///
+/// This is what makes "all of them on that monitor" mean anything for an app like
+/// Word, where most windows are minimized most of the time. Un-minimizing them to
+/// move them, then leaving them up, is a far bigger change to someone's desk than
+/// naming a monitor asked for; leaving them out entirely means the instruction
+/// quietly does not apply to the majority of the windows it named.
+///
+/// The rect here is the window rect, borders and all, rather than the visible frame
+/// the other paths use. It is self-consistent: the offset within the work area is
+/// preserved either way, and the invisible border simply travels with it.
+let private restorePositionTo (hwnd: nativeint) (destination: Rectangle) =
+    let mutable placement = WINDOWPLACEMENT()
+    placement.length <- uint32 (Marshal.SizeOf(typeof<WINDOWPLACEMENT>))
+
+    if GetWindowPlacement(hwnd, &placement) then
+        let originX, originY = workspaceOrigin ()
+        let normal = placement.rcNormalPosition
+
+        let restored =
+            Rectangle(
+                normal.Left + originX,
+                normal.Top + originY,
+                normal.Right - normal.Left,
+                normal.Bottom - normal.Top)
+
+        let source = Screen.FromRectangle(restored).WorkingArea
+
+        if source <> destination then
+            let moved = movedBetween source destination restored
+
+            placement.rcNormalPosition <-
+                RECT(moved.Left - originX, moved.Top - originY,
+                     moved.Right - originX, moved.Bottom - originY)
+
+            // showCmd rides along untouched, so the window stays minimized.
+            SetWindowPlacement(hwnd, &placement) |> ignore
+
+/// Move a window to another monitor without deciding a size for it: same size, same
+/// offset within the work area, clamped so a smaller destination cannot push it off
+/// the edge.
+///
+/// A window already on that monitor is left completely alone rather than placed
+/// where it already is. The difference is visible: `place` restores a maximized
+/// window before moving it, so "moving" a maximized window nowhere would un-maximize
+/// it - which is exactly the sort of thing a layout must not do to a window it was
+/// asked to leave the size it is.
+let toMonitor (hwnd: nativeint) (destination: Rectangle) =
+    if IsIconic(hwnd) then
+        restorePositionTo hwnd destination
+    else
+        let source = Screen.FromHandle(hwnd).WorkingArea
+
+        if source <> destination then
+            // A maximized window has to be restored before it will move, then
+            // maximized again - on its new monitor, which is the point.
+            let wasMaximized = IsZoomed(hwnd)
+            if wasMaximized then ShowWindow(hwnd, SW_RESTORE) |> ignore
+
+            place hwnd (movedBetween source destination (visibleFrame hwnd))
+
+            if wasMaximized then ShowWindow(hwnd, SW_MAXIMIZE) |> ignore
+
 /// Send the current window to the next monitor, wrapping past the last back to the
 /// first. Its size is kept and its offset within the monitor preserved, clamped so
 /// it cannot land off the edge of a smaller screen.
@@ -115,21 +203,7 @@ let toNextMonitor () =
         if hwnd <> 0n && screens.Length > 1 then
             let current = Screen.FromHandle(hwnd)
             let index = screens |> Array.findIndex (fun screen -> screen.DeviceName = current.DeviceName)
-            let next = screens.[(index + 1) % screens.Length]
-
-            // A maximized window has to be restored before it will move, then
-            // maximized again - on its new monitor, which is the point.
-            let wasMaximized = IsZoomed(hwnd)
-            if wasMaximized then ShowWindow(hwnd, SW_RESTORE) |> ignore
-
-            let wanted = movedBetween current.WorkingArea next.WorkingArea (visibleFrame hwnd)
-            let placed = allowingForBorder hwnd wanted
-
-            SetWindowPos(hwnd, 0n, placed.X, placed.Y, placed.Width, placed.Height,
-                         SWP_NOZORDER ||| SWP_NOACTIVATE)
-            |> ignore
-
-            if wasMaximized then ShowWindow(hwnd, SW_MAXIMIZE) |> ignore
+            toMonitor hwnd screens.[(index + 1) % screens.Length].WorkingArea
 
         elif screens.Length <= 1 then
             Log.note "monitor" "Only one monitor, so there is nowhere to send the window."
@@ -140,18 +214,6 @@ let toNextMonitor () =
 let toZone (zone: Zone) =
     try
         let hwnd = GetForegroundWindow()
-
-        if hwnd <> 0n then
-            // A maximized window ignores SetWindowPos geometry, so it has to come
-            // out of that state first or the keystroke appears to do nothing.
-            if IsZoomed(hwnd) then ShowWindow(hwnd, SW_RESTORE) |> ignore
-
-            let area = Screen.FromHandle(hwnd).WorkingArea
-            let wanted = target zone area
-            let placed = allowingForBorder hwnd wanted
-
-            SetWindowPos(hwnd, 0n, placed.X, placed.Y, placed.Width, placed.Height,
-                         SWP_NOZORDER ||| SWP_NOACTIVATE)
-            |> ignore
+        if hwnd <> 0n then place hwnd (target zone (Screen.FromHandle(hwnd).WorkingArea))
     with error ->
         Log.write "snap" error

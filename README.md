@@ -62,6 +62,9 @@ The two sections take different *shapes*, and the difference is enforced:
 | `launcher` | modifiers **and** a key | a chord: press and release `Ctrl+K`, then a key picks the app |
 | `placement` | modifiers **only** | held down while the zone key is pressed |
 
+A third section, `layouts`, has no prefix of its own: it is reached by one key under
+the `placement` prefix. See [Layouts](#layouts).
+
 Modifiers must match **exactly**. A `Ctrl` prefix does not fire while Ctrl+Shift is
 held, so two sections can never shadow each other unless they are given the same
 modifier set - in which case `placement` is tested first.
@@ -73,6 +76,13 @@ modifier set - in which case `placement` is tested first.
 | `launcher.passThroughIn` | process names (no `.exe`) that keep their own prefix key |
 | `placement.nextMonitor` | key that sends the window to the next monitor; omit, or `"none"`, to leave it unbound |
 | `placement.cycleDisplay` | key that switches the desktop to internal-only and back to extend; omit, or `"none"`, to leave it unbound |
+| `placement.applyLayout` | key that arranges every window at once; omit, or `"none"`, to leave it unbound. Needs a `layouts` section, and vice versa |
+| `placement.applyLayoutOnChange` | seconds to wait after the hardware settles before applying the layout that now fits; `"off"` or omitted leaves the key as the only trigger |
+| `layouts[].when` | `dock`, `monitors`, both, or omitted entirely for a catch-all. First profile that matches wins |
+| `layouts[].windows[].app` | the `name` of one of the launcher's apps - the two sections share a definition rather than repeating one |
+| `monitor` | a number from 1, `"primary"`, or part of a monitor's name; the tray menu lists what is attached |
+| `rect` | `"left, top, width, height"` as fractions of the monitor - `"2/3, 0, 1/3, 1"` is the right third, full height. **Omit it** to mean "that monitor, wherever on it it already was" |
+| `instances` | `"all"` for every window the app has open; omit, or `"front"`, for just the one `Ctrl+K` would switch to |
 | `key` | the character the key types - `"Y"`, `"["`, `";"`, `"4"` - or a `Keys` name for keys that type nothing: `"F1"`, `"Escape"`, `"NumPad7"`, `"Space"` |
 | `processName` | the **image name**, as shown in Task Manager's *Details* tab - not the app's display name. VS Code is `Code`, not `Visual Studio Code`. A `.exe` suffix is stripped for you |
 | `paths` | launch candidates, first one that exists wins; `%VARS%` are expanded |
@@ -102,6 +112,38 @@ app 'VS Code': processName is required - it is the image name shown in Task Mana
 At startup a bad file means nothing is bound. A bad **reload** keeps the previous
 configuration in force rather than unbinding everything mid-session. Either way the
 message goes to a tray balloon and to `mashedpotato.log`.
+
+### It reloads itself when you save
+
+Saving the file reloads it. There is nothing to turn on and no reason to reach for
+the tray menu, which is still there for when you want to be told it worked.
+
+Three things stand between a file changing and a reload, and each is a way this goes
+wrong if left out.
+
+**Changed is not enough.** A great many editors - VS Code, vim, Notepad since
+Windows 10 - never write to the file at all. They write a temporary one beside it
+and rename it over the top, which is what makes a save atomic and what makes a
+watcher listening only for `Changed` miss the save completely. `Created` and
+`Renamed` are watched for that reason. `Deleted` deliberately is not: it is mostly
+the first half of one of those renames, and reacting to it would mean reading a file
+that is about to exist again - or worse, `load` reinstalling the shipped copy over an
+edit in progress.
+
+**One save is not one event.** Writing a file is several operations and arrives as
+two or three notifications. The timer is restarted rather than started on each, the
+same way the hardware watcher settles, so a save collapses into one reload.
+
+**The writer may not have let go.** The event can arrive while the editor still
+holds the handle, and a read then either fails or returns half a file. Neither is a
+broken configuration and neither should be reported as one, so the timer re-arms and
+tries again - four times, and then once anyway, because a lock that never clears is
+worth complaining about.
+
+An automatic reload is **silent when it works** and loud when it does not. Choosing
+*Reload config* from the tray is a question and gets an answer; a save is not, and a
+balloon on every one of them while you are editing zones would be its own small
+punishment. A file that will not load interrupts either way.
 
 The one thing not configurable is what an unbound key does while the banner is
 up: `Escape`, the prefix again and any other unbound key all dismiss it, and
@@ -159,14 +201,15 @@ design review.
 | 1 | `Interop.fs` | the Windows API: P/Invoke declarations and thin helpers |
 | 2 | `Log.fs` | `mashedpotato.log`, because a tray daemon fails invisibly |
 | 3 | `Domain.fs` | pure data - no Windows, no JSON, no behaviour |
-| 4 | `Config.fs` | reading `mashedpotato.json` into those types |
+| 4 | `Config.fs` | reading `mashedpotato.json` into those types, and noticing when it changes |
 | 5 | `App.fs` | launch / focus / minimize an application |
 | 6 | `Snap.fs` | move and resize the current window |
 | 7 | `Display.fs` | cycling the desktop topology |
-| 8 | `Chord.fs` | the keyboard hook and what a key means |
-| 9 | `Overlay.fs` | the on-screen banner |
-| 10 | `Daemon.fs` | tray icon, message pump, assembly |
-| 11 | `Program.fs` | entry point |
+| 8 | `Layout.fs` | arranging every window at once |
+| 9 | `Chord.fs` | the keyboard hook and what a key means |
+| 10 | `Overlay.fs` | the on-screen banner |
+| 11 | `Daemon.fs` | tray icon, message pump, assembly |
+| 12 | `Program.fs` | entry point |
 
 Two files beside them are not code: `mashed.ico`, and `icon/` holding the artwork it
 was made from together with the script that makes it. See [The icon](#the-icon).
@@ -629,6 +672,313 @@ different things - the first is what Explorer and the taskbar read off the file,
 second is what `Daemon.trayIcon` reads at run time. A tray icon loaded from a loose
 file beside the executable is one missing file away from a blank square.
 
+## Layouts
+
+A zone moves the window in front of you. A layout moves *all* of them, to wherever
+they belong on whatever the machine is plugged into right now. `Ctrl+Shift+Alt+0`.
+
+    "placement": { "applyLayout": "0", ... },
+    "layouts": [
+      {
+        "name": "Office (WD25, two Dells)",
+        "when": { "dock": "WD25", "monitors": 2 },
+        "windows": [
+          { "app": "VS Code",          "monitor": 1, "rect": "0, 0, 2/3, 1" },
+          { "app": "Windows Terminal", "monitor": 1, "rect": "2/3, 0, 1/3, 1" },
+          { "app": "Chrome",           "monitor": 2, "rect": "0, 0, 1, 1" }
+        ]
+      }
+    ]
+
+The key lives in `placement` beside `nextMonitor` and `cycleDisplay`, because it is
+a placement action and it answers to the same held prefix. The arrangements live at
+the top level because there is a list of them and they are the part that gets
+edited. Each half is checked against the other: a key with no layouts, or layouts
+with no key, is a configuration error rather than something that silently does
+nothing.
+
+### Why profiles, and why the dock
+
+The same three windows want a different arrangement at each desk, and the machine
+cannot be asked which desk it is at. What it can be asked is which monitors are
+attached and which devices are present, and between them those identify a desk.
+
+Monitor *count* alone does not, which is the trap. A laptop docked to two externals
+with the lid shut has two monitors; the same laptop at home, lid open, with one
+external also has two. Only the dock separates those two cases, so `when` can ask
+about either or both:
+
+| | Matches when |
+|---|---|
+| `"dock": "WD25"` | some device present is named like that - `WD25` finds `Dell Pro Dock WD25` |
+| `"monitors": 2` | exactly that many monitors are attached |
+| both | both hold |
+| neither (`when` omitted) | always - which is how the last profile becomes the fallback |
+
+On top of whatever `when` says, **a profile only matches if every monitor it names
+is actually attached**. Nobody writes that condition; it is the difference between a
+profile being *chosen* and being *carryable*, and a profile that cannot be carried
+out should never win. It is also what makes `"monitors"` unnecessary nearly always -
+see below.
+
+### Counting monitors is a trap
+
+`"monitors": 2` was how the shipped profiles first told the office desk from the
+home one, and it is subtly wrong. Two externals with the lid **shut** is two
+monitors. Open the lid and it is three, the profile stops matching the desk it was
+written for, and the fallback takes over - so plugging the dock back in lands
+everything on the laptop screen and looks exactly like the dock not being detected.
+
+    1  \\.\DISPLAY1  Dell P2222H (DP)     0,0 1920x1080  PRIMARY
+    2  \\.\DISPLAY2  Dell P2222H (DP)     1920,0 1920x1080
+    3  \\.\DISPLAY3  Generic PnP Monitor  3840,802 1920x1200   <- the lid, open
+
+What the office layout actually needs is not "two monitors" but "monitors 1 and 2
+exist", which is true with the lid either way - and which is checked automatically,
+from the profile's own `windows` list. So the shipped profiles ask about the dock
+and nothing else.
+
+`"monitors"` is still there, and still means *exactly* that many. It is the right
+tool when two desks differ **only** by how many screens they have. It is the wrong
+tool for anything a lid can change.
+
+**Profiles are tried in order and the first match wins**, so they run specific to
+general and the catch-all goes last. There is deliberately no `"dock": "none"`: a
+laptop advertises an ACPI `Docking Station` node whether or not anything is plugged
+into it, so "no dock" is not a thing that can be honestly tested for. Ordering says
+the same thing without lying about it.
+
+Finding a dock means walking the whole device tree - 300 devices and about 130ms on
+this machine - so it happens once when the key is pressed, never in the keyboard
+hook, and not at all if no profile mentions a dock.
+
+One wrinkle worth knowing: the name to match is the device's **friendly name**, not
+its description. The WD25 describes itself as `WinUsb Device` and is only called
+`Dell Pro Dock WD25` by the friendly name, so `presentDeviceNames` reads that first
+and falls back to the description - the order Device Manager resolves a name in.
+Reading only the description, which is the obvious first guess, finds no dock at all.
+
+### Naming a monitor
+
+`"monitor"` takes a number from 1, `"primary"`, or any part of a monitor's name:
+
+    "monitor": 2                  the second monitor
+    "monitor": "primary"          wherever the taskbar's clock is
+    "monitor": "Dell P2222H"      matched case-insensitively, anywhere in the name
+
+Numbering is by adapter name - `\\.\DISPLAY1`, `\\.\DISPLAY2` - which is the
+numbering Display Settings shows and the same order `nextMonitor` cycles in. Only
+*attached* monitors are counted, so with the lid shut the two externals are 1 and 2,
+and opening the lid makes the built-in panel 1 and pushes them to 2 and 3.
+
+That is the one thing about a layout that can quietly go wrong, so the tray menu
+lists what is attached right now, by number and by name, along with any docks it can
+see and which profile they add up to:
+
+    Ctrl+Shift+Alt+0   →   Layout: Office (WD25, two Dells)
+            1: Dell P2222H (DP) 1920x1080 (primary)
+            2: Dell P2222H (DP) 1920x1080
+            Dell Pro Dock WD25
+
+Those are the strings to paste into a new profile. The menu works it out the same
+way the keystroke does, so it cannot advertise one profile and apply another.
+
+### Saying only which monitor
+
+Some windows are worth arranging exactly and some are only in the wrong place. A
+slot with no `rect` is the second kind:
+
+    { "app": "Microsoft Word", "monitor": 1, "instances": "all" }
+
+That window keeps its size and its offset within the work area, and simply moves to
+monitor 1 - the same arithmetic `Ctrl+Shift+Alt+Z` uses, clamped so a smaller
+destination cannot push it off the edge. A window already on that monitor is left
+*completely* alone rather than placed where it already is, which matters more than
+it sounds: placing goes through the path that restores a maximized window first, so
+"moving" a maximized window nowhere would quietly un-maximize it.
+
+`"instances": "all"` takes every window the app has open rather than the front one.
+Word has a window per document and they come and go, so there is no way to name them
+in a file and no point trying; `all` says what is actually meant. The default stays
+`front`, because for Chrome - which is regularly six windows - moving all of them is
+almost never what anyone wants.
+
+The two settings are independent. `all` with a rect is legal and means what it says:
+every window of that app, stacked on the same rectangle.
+
+### Minimized windows, and the one that is not obvious
+
+A minimized window's rect is `-32000, -32000`. That is Windows parking it off-screen
+and says nothing about where it belongs, so it cannot simply be moved.
+
+What a slot does about it depends on whether it gave a rect, and the split follows
+from what each one is asking for:
+
+* **With a rect** the window is restored first. "Exactly here" cannot be true of a
+  minimized window, and one that silently accepts the geometry and stays minimized
+  looks precisely like the key having done nothing.
+
+* **Without a rect** only the monitor was asked about, so the window keeps its state
+  and its *restore position* is moved instead - `GetWindowPlacement`,
+  `rcNormalPosition`, `SetWindowPlacement`, with `showCmd` left alone so it stays
+  minimized. Nothing appears on screen; the window has simply come to belong to the
+  other monitor, and that is where it comes back when it is un-minimized.
+
+This is what makes `all` mean anything for Word. Of the four Word windows open on
+this machine while writing it, **three were minimized** - so restoring them all to
+move them would have thrown four documents up on screen, and skipping them would
+have left the instruction applying to one window out of four.
+
+`rcNormalPosition` is in *workspace* coordinates: screen coordinates offset by the
+origin of the primary monitor's work area. With the taskbar at the bottom, or
+auto-hidden as it is here, that origin is `(0, 0)` and the two are identical - which
+is exactly why the correction is easy to leave out and never notice it missing.
+
+### Following the hardware
+
+    "applyLayoutOnChange": 4
+
+With that set, docking or undocking rearranges the windows on its own, four seconds
+after the hardware stops changing. `"off"` or leaving it out keeps the keystroke as
+the only way in.
+
+Windows already broadcasts what is needed, to every top-level window, with nothing
+to register for:
+
+| | Sent when |
+|---|---|
+| `WM_DISPLAYCHANGE` | the desktop's shape changes - a monitor arriving or leaving, a resolution or topology change |
+| `WM_DEVICECHANGE` with `DBT_DEVNODES_CHANGED` | the device tree changes at all |
+
+Both are listened to rather than just the first, because they answer different
+halves of the question: a dock can arrive before its monitors come up, and a monitor
+can arrive with no dock involved at all.
+
+**The hidden window has to be a real top-level window for any of this to arrive.** A
+message-only window - `HWND_MESSAGE`, the obvious choice for something invisible
+that exists only to receive messages - is cheaper and would never get one of these,
+because broadcasts go to top-level windows and a message-only window is not one.
+Invisible is fine; not top-level is not. The window here was already a plain hidden
+`Form`, so this cost nothing, but it is the kind of optimisation that would have
+silently broken the feature.
+
+Three things then stand between a broadcast and moving someone's windows.
+
+**Settling.** A dock arriving is dozens of device notifications and several display
+changes over some seconds, and a layout applied to a desktop that is still
+rearranging itself achieves nothing. The timer is **restarted** on every broadcast
+rather than started, so a storm collapses into one pass after the last of them. Four
+seconds is a starting point rather than a measurement - it is the one number here
+that depends on how long a particular dock takes to bring its monitors up, which is
+why it is in the file and not in the code.
+
+**Asking whether anything actually changed.** `DBT_DEVNODES_CHANGED` fires for every
+USB device on the machine. Rearranging someone's windows because they plugged in a
+phone would be indefensible, so the event path recomputes which profile fits and
+does nothing unless the answer differs from what was already in force. The
+broadcasts cannot say *what* changed; comparing the conclusion is what turns a
+stream of meaningless notifications into "the desk changed".
+
+That is also why the keystroke and the event path are deliberately different.
+`Ctrl+Shift+Alt+0` is **unconditional** - it is what you press when something has
+been dragged out of place and you want it back, and "nothing has changed" is not an
+answer to that. The event path is conditional, because nobody asked it to do
+anything at all.
+
+**Starting in agreement.** The profile in force is seeded from the configuration
+when it is read, without moving anything. Otherwise launching the daemon, or
+reloading the config, would tidy a desk nobody asked it to touch. It begins by
+agreeing with what is already there and acts on the next change.
+
+The work runs on the thread pool, not the message loop - and so does the keystroke
+path, which is the one place this program hands a key's work to a thread rather than
+to the loop. The decision walks the whole device tree, and placing windows can block
+on an unresponsive application; the message loop is also the thread the keyboard
+hook is delivered to, which Windows drops if it stops answering promptly.
+
+The keystroke needs it for a second reason: **it auto-repeats.** A low-level hook
+sees a held key as a stream of key-downs, indistinguishable from real ones, and four
+passes in a single second turned up in the log the first time someone leant on
+`Ctrl+Shift+Alt+0`. Queued on the message loop those serialise, each paying for its
+own walk of the device tree. On the thread pool the latch inside `Layout` drops them
+outright: one pass runs, the repeats find it busy and give up.
+
+The tray menu says whether it is armed:
+
+    Ctrl+Shift+Alt+0   →   Layout: Office (WD25, two Dells)
+            1: Dell P2222H (DP) 1920x1080 (primary)
+            2: Dell P2222H (DP) 1920x1080
+            Dell Pro Dock WD25
+            follows the hardware, 4s after it settles
+
+### Rects, and why they are not zones
+
+    "rect": "left, top, width, height"
+
+Four fractions of the monitor's working area. A zone is a size plus an anchor, which
+cannot say "from a third across to a half" - and a layout has to, because it has to
+express arrangements that were never snapped to anything. Fractions stay integer
+pairs for the reason [zones do](#snapping-a-window): 1/3 and 1/6 of 1920 are 640 and
+320, and the windows meet exactly. `left` and `top` may be `0`; a width or height
+may not.
+
+A rect that runs off the monitor - `left` 2/3 with `width` 2/3 - is rejected when
+the file is read, with the arithmetic done by cross-multiplication so the check is
+exact rather than floating point.
+
+### What it does to a window
+
+Windows are found the way `Ctrl+K` finds them - real windows of a process of that
+name, the topmost non-minimized one unless the slot said `all` - and moved by
+`Snap.place` or `Snap.toMonitor`, the same functions zones and `nextMonitor` go
+through, so the invisible-border correction happens in exactly one place.
+
+Apps that are not running are **skipped, not launched**. Launching would mean
+waiting for a window to exist before it could be placed, and a keystroke that
+sometimes takes ten seconds is worse than one that says what it could not do. What
+it could not do arrives as a tray balloon: *"Office: Spotify has no window open"*.
+
+### The three profiles as shipped
+
+Measured off the running desktop rather than guessed at. Lid shut, WD25, two Dell
+P2222Hs side by side at 1920x1080, taskbar auto-hidden so the working area is the
+whole screen:
+
+| | Monitor | Visible frame | As a rect |
+|---|---|---|---|
+| VS Code | 1 | `0,0 1280x1080` | `0, 0, 2/3, 1` |
+| Windows Terminal | 1 | `1280,0 640x1080` | `2/3, 0, 1/3, 1` |
+| Chrome | 2 | `1920,0 1920x1080` | `0, 0, 1, 1` |
+
+Those three windows span 3840 pixels: VS Code across the first third of it, the
+terminal to the half, Chrome across the rest. **That** is the arrangement, and it is
+what the other two profiles keep:
+
+| | Office | Laptop alone | Home |
+|---|---|---|---|
+| VS Code | mon 1, `0, 0, 2/3, 1` | mon 1, `0, 0, 1/3, 1` | mon 2, `0, 0, 1/3, 1` |
+| Windows Terminal | mon 1, `2/3, 0, 1/3, 1` | mon 1, `1/3, 0, 1/6, 1` | mon 2, `1/3, 0, 1/6, 1` |
+| Chrome | mon 2, `0, 0, 1, 1` | mon 1, `1/2, 0, 1/2, 1` | mon 2, `1/2, 0, 1/2, 1` |
+| Microsoft Word | mon 1, all, no rect | - | mon 2, all, no rect |
+| Obsidian | mon 1, all, no rect | - | mon 2, all, no rect |
+
+Word and Obsidian give no rect: they are only ever in the wrong *place*, and every
+window of each goes, not just the front one. Neither appears under *Laptop alone*,
+where there is one monitor and nothing to choose. Under *Home* they follow that
+profile's rule - everything on the external, the laptop panel left empty.
+
+The single-screen fractions are the two-monitor ones halved, which is what makes it
+the same arrangement rather than a new one: the windows keep their proportions and
+their left-to-right order, on a third of the pixels.
+
+Home puts all three on monitor 2 and leaves the laptop panel empty, which is the
+whole point of that profile. It assumes the built-in panel is `\\.\DISPLAY1` and so
+numbered 1, which is the usual arrangement on a laptop - if the tray menu says
+otherwise, replace the `2` with part of the external monitor's name. Shutting the
+lid at home leaves one monitor, no profile matches two, and it falls through to
+*Laptop alone* - which puts the same arrangement on the only screen there is. That
+fallthrough is the ordering doing its job rather than a special case.
+
 ## Known limits
 
 * `Ctrl+K` is swallowed globally unless the foreground process is listed in
@@ -652,5 +1002,25 @@ file beside the executable is one missing file away from a blank square.
 * `ExtractAssociatedIcon` on `Mashed.exe` returns 32x32 whatever the caller asks
   for. It is not used here - the tray reads the embedded copy - but it is the
   obvious thing to reach for, and it quietly ignores the other eight frames.
+* A held `Ctrl+Shift+Alt+0` still costs one pass per burst rather than none - the
+  latch drops the repeats, it does not stop them arriving. A low-level hook cannot
+  tell an auto-repeat from a real key-down, which is where that would have to be
+  fixed.
+* Four seconds of settling is a guess, not a measurement - no dock was plugged or
+  unplugged while this was written. It is in the configuration for that reason. If
+  windows land while the monitors are still coming up, raise it.
+* Nothing watches for sleep or resume. Docking usually raises the broadcasts anyway
+  on wake; a lid closed and opened on the same hardware raises none, and does not
+  need to.
+* A layout skips an app that is not running rather than launching it, and says so
+  in a balloon. Placing a freshly launched window means waiting for it to appear,
+  which is the kind of wait that turns a keystroke into a pause.
+* The workspace-coordinate correction on `rcNormalPosition` is the one path here
+  that this machine cannot exercise: its taskbar is auto-hidden, so the primary
+  work area starts at `(0, 0)` and the correction is provably a no-op. It only
+  starts to matter with a taskbar docked to the top or the left.
+* `when` cannot say "the monitor that is not the laptop's". Windows can be asked -
+  `QueryDisplayConfig` reports `OUTPUT_TECHNOLOGY_INTERNAL` - but not cheaply, and
+  matching the panel by name gets to the same place in one line of configuration.
 * Only one Mashed Potato runs at a time; the C# and F# builds share a mutex name, so
   whichever starts second exits silently.

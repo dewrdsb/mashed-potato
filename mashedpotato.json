@@ -85,6 +85,8 @@
     "prefix": "Ctrl+Shift+Alt",
     "nextMonitor": "Z",
     "cycleDisplay": "1",
+    "applyLayout": "0",
+    "applyLayoutOnChange": 1,
     "zones": [
       {
         "key": "H",
@@ -192,5 +194,37 @@
         "height": "1"
       }
     ]
-  }
+  },
+  "layouts": [
+    {
+      "name": "Office (WD25, two Dells)",
+      "when": { "dock": "WD25" },
+      "windows": [
+        { "app": "VS Code", "monitor": 1, "rect": "0, 0, 2/3, 1" },
+        { "app": "Windows Terminal", "monitor": 1, "rect": "2/3, 0, 1/3, 1" },
+        { "app": "Chrome", "monitor": 2, "rect": "0, 0, 1, 1" },
+        { "app": "Microsoft Word", "monitor": 1, "instances": "all" },
+        { "app": "Obsidian", "monitor": 1, "rect": "1/6, 0, 4/6, 1" }
+      ]
+    },
+    {
+      "name": "Home (WD22TB4, one external)",
+      "when": { "dock": "WD22TB4" },
+      "windows": [
+        { "app": "VS Code", "monitor": 2, "rect": "0, 0, 1/3, 1" },
+        { "app": "Windows Terminal", "monitor": 2, "rect": "1/3, 0, 1/6, 1" },
+        { "app": "Chrome", "monitor": 2, "rect": "1/2, 0, 1/2, 1" },
+        { "app": "Microsoft Word", "monitor": 2, "instances": "all" },
+        { "app": "Obsidian", "monitor": 2, "instances": "all" }
+      ]
+    },
+    {
+      "name": "Laptop alone",
+      "windows": [
+        { "app": "VS Code", "monitor": 1, "rect": "0, 0, 1, 1" },
+        { "app": "Windows Terminal", "monitor": 1, "rect": "1/3, 0, 2/3, 1" },
+        { "app": "Chrome", "monitor": 1, "rect": "0, 0, 1, 1" }
+      ]
+    }
+  ]
 }

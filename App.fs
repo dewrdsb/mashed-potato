@@ -1,4 +1,4 @@
-// 5 of 11 - launching, focusing and minimizing an application
+// 5 of 12 - launching, focusing and minimizing an application
 //
 // Finding the window that belongs to an app, which is harder than it sounds, and
 // deciding what to do with it.
@@ -104,6 +104,18 @@ let private launch (target: Target) =
         Process.Start(ProcessStartInfo(command, UseShellExecute = true)) |> ignore
     with ex ->
         onError $"Could not start {target.Name}: {ex.Message}"
+
+/// Every window of an app a person could be looking at, topmost first. A layout
+/// asking for all of them takes this; there is no way to name them individually in
+/// a configuration file, because they are documents and they come and go.
+let windowsFor (target: Target) =
+    let pids = runningPids target
+    if pids.IsEmpty then [] else windowsOf pids
+
+/// The window a layout should move: the same one `activate` would act on, found
+/// without touching it. None when nothing of that name is running, or when it is
+/// running with no window a person could be looking at - closed to the tray.
+let windowOf (target: Target) = pick (windowsFor target)
 
 /// Launch, focus or minimize - whichever the app's current state calls for.
 let activate (target: Target) =

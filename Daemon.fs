@@ -1,4 +1,4 @@
-// 10 of 11 - assembling the program
+// 11 of 12 - assembling the program
 //
 // Tray icon, hidden message-pump window, hook installation and the message loop.
 // The first file that knows about all the others.
@@ -12,12 +12,33 @@ module internal MashedPotato.Daemon
 open System
 open System.Diagnostics
 open System.Drawing
+open System.Threading.Tasks
 open System.Windows.Forms
 
 // This module assembles the app: a tray icon, a hidden window used as a way to get
 // work onto the UI thread, the keyboard hook, and the message loop that drives all
 // of it. There is no visible main window - the banner is shown and hidden, and
 // nothing else ever appears.
+
+/// The hidden window does two jobs. One is being somewhere to post work to the UI
+/// thread from the keyboard hook. The other is being somewhere for Windows to
+/// deliver the two broadcasts that mean "the hardware changed underneath you".
+///
+/// It has to be a real top-level window for that second job. A message-only window
+/// - HWND_MESSAGE, the obvious choice for something invisible that only wants
+/// messages - is cheaper and would never hear a single one of these: broadcasts go
+/// to top-level windows, and a message-only window is not one. Invisible is fine;
+/// not top-level is not.
+type private Pump(onHardwareChange: unit -> unit) =
+    inherit Form()
+
+    override this.WndProc(message: byref<Message>) =
+        match message.Msg with
+        | Interop.WM_DISPLAYCHANGE -> onHardwareChange ()
+        | Interop.WM_DEVICECHANGE when int message.WParam = Interop.DBT_DEVNODES_CHANGED -> onHardwareChange ()
+        | _ -> ()
+
+        base.WndProc(&message)
 
 /// The .ico is embedded rather than read from beside the executable: a tray icon
 /// that depends on a loose file is one missing file away from a blank square.
@@ -70,7 +91,7 @@ let private prefixText (prefix: Prefix) =
 /// events for clicks and can show balloon notifications. ContextMenuStrip is the
 /// menu it pops up on right-click; items with Enabled = false are the standard way
 /// to put non-clickable captions in one.
-let private buildTrayMenu (onReload: unit -> unit) =
+let private buildTrayMenu (onReload: unit -> unit) situation =
     let menu = new ContextMenuStrip()
 
     let caption (text: string) =
@@ -94,6 +115,32 @@ let private buildTrayMenu (onReload: unit -> unit) =
         match settings.Placement.CycleDisplayVk with
         | Some vk -> caption $"{prefixText settings.Placement.Prefix}+{keyName vk}   →   Cycle display"
         | None -> ()
+
+        // Which layout is live depends on what is plugged in, so it cannot be read
+        // off the file - it has to be worked out, and the same way the keystroke
+        // does it. The monitors and docks are listed underneath because they are
+        // exactly what a new profile has to be written against, and there is
+        // nowhere else to see the names Windows uses for them.
+        match settings.Placement.ApplyLayoutVk, situation with
+        | None, _ | _, None -> ()
+        | Some vk, Some(monitors, docks, profile) ->
+            let now = match profile with Some p -> p.Name | None -> "nothing matches"
+
+            caption $"{prefixText settings.Placement.Prefix}+{keyName vk}   →   Layout: {now}"
+
+            for monitor in monitors do
+                caption $"        {monitor}"
+
+            for dock in docks do
+                caption $"        {dock}"
+
+            match settings.Placement.ApplyLayoutOnChange with
+            | Some settle ->
+                // Formatted outside the interpolation: F# reads a format specifier
+                // beginning with a digit as a number and stops parsing the string.
+                let seconds = settle.TotalSeconds.ToString("0.#")
+                caption $"        follows the hardware, {seconds}s after it settles"
+            | None -> ()
 
     menu.Items.Add(new ToolStripSeparator()) |> ignore
 
@@ -135,11 +182,22 @@ let run () =
     let configProblem = Config.load ()
     Application.EnableVisualStyles()
 
+    // Restarted rather than started on every broadcast, so a dock arriving - which
+    // is dozens of device notifications and several display changes over a few
+    // seconds - collapses into one pass, after the last of them.
+    use settling = new Timer()
+
     // Windows calls a WH_KEYBOARD_LL hook on the thread that installed it, so the
     // callback already runs here. This hidden window is what defers the actual work
     // out of the callback, which has to return promptly or Windows drops the hook.
     // Putting the banner up is cheap enough to do inline.
-    use pump = new Form()
+    use pump =
+        new Pump(fun () ->
+            match Config.current with
+            | Some settings when settings.Placement.ApplyLayoutOnChange.IsSome ->
+                settling.Stop()
+                settling.Start()
+            | _ -> ())
 
     // Touching .Handle forces WinForms to create the underlying HWND now. Until
     // something asks, it defers creation - and a window with no handle cannot be
@@ -156,6 +214,19 @@ let run () =
     // implicitly, hence the explicit construction.
     let onLoop (work: unit -> unit) = pump.BeginInvoke(Action(work)) |> ignore
 
+    // The decision walks the whole device tree, and the placement can block on an
+    // unresponsive application, so neither happens here: this tick is on the
+    // message loop, which is also the thread the keyboard hook is delivered to.
+    settling.Tick.Add(fun _ ->
+        settling.Stop()
+
+        Task.Run(fun () ->
+            match Layout.applyIfChanged () with
+            | Layout.Outcome.Applied name -> Log.note "layout" $"Hardware changed; applied '{name}'."
+            | Layout.Outcome.Unchanged _ -> ()
+            | Layout.Outcome.NoMatch -> Log.note "layout" "Hardware changed, and no layout matches what is there now.")
+        |> ignore)
+
     use _banner = Overlay.create ()
 
     // The banner is raised and lowered through the message loop, not inside the
@@ -167,7 +238,13 @@ let run () =
           Prompt = fun visible -> onLoop (fun () -> Overlay.setVisible visible)
           SnapTo = fun zone -> onLoop (fun () -> Snap.toZone zone)
           NextMonitor = fun () -> onLoop Snap.toNextMonitor
-          CycleDisplay = fun () -> onLoop Display.cycle }
+          CycleDisplay = fun () -> onLoop Display.cycle
+          // Off the message loop, unlike its neighbours. Applying a layout walks
+          // the device tree and can block on an unresponsive application, and this
+          // key auto-repeats while it is held - four passes in a second were
+          // observed in the log. On the loop those queue up and serialise, on the
+          // thread pool the latch inside Layout drops the repeats outright.
+          ApplyLayout = fun () -> Task.Run(Layout.apply) |> ignore }
 
     match Chord.install handlers with
     | Error code ->
@@ -190,19 +267,75 @@ let run () =
 
         // The menu closes over `reload`, and reload rebuilds the menu.
         let rec refresh () =
+            // One survey, used twice: the menu shows it, and the layout takes it as
+            // the starting point. Taking it as the starting point is what stops the
+            // daemon rearranging a desk the moment it launches - it begins by
+            // agreeing with what is already there, and acts on the next change.
+            let situation =
+                match Config.current with
+                | Some settings when not (List.isEmpty settings.Layouts) ->
+                    let survey = Layout.survey ()
+                    let _, _, profile = survey
+                    Layout.syncTo profile
+
+                    match settings.Placement.ApplyLayoutOnChange with
+                    | Some settle -> settling.Interval <- int settle.TotalMilliseconds
+                    | None -> ()
+
+                    Some survey
+                | _ -> None
+
             let previous = tray.ContextMenuStrip
-            tray.ContextMenuStrip <- buildTrayMenu reload
+            tray.ContextMenuStrip <- buildTrayMenu reload situation
             tray.Text <- trayText ()
             if not (isNull previous) then previous.Dispose()
 
-        and reload () =
+        // `announce` is the only difference between the two ways this happens, and
+        // it is worth the parameter. Choosing "Reload config" is a question, and a
+        // question deserves an answer. A save in an editor is not: the file watcher
+        // fires on every one of them, and a balloon per keystroke-and-save while
+        // someone is editing zones would be its own small punishment. Both are loud
+        // about failure - a config that will not load is worth interrupting for.
+        and reloadWith announce =
             match Config.load () with
             | Some problem -> balloon ToolTipIcon.Error problem
-            | None -> balloon ToolTipIcon.Info "Config reloaded."
+            | None -> if announce then balloon ToolTipIcon.Info "Config reloaded."
 
             refresh ()
 
+        and reload () = reloadWith true
+
         refresh ()
+
+        // ---- reloading when the file changes ------------------------------------
+        //
+        // Config.watch does the awkward half - which events count, and why Changed
+        // alone is not enough. What is left here is the debounce every file watcher
+        // needs, since one save is routinely two or three events, and the wait for
+        // the writer to let go: re-arm and try again rather than report a half-
+        // written file as a broken one, and eventually try anyway, because a lock
+        // that never clears is worth complaining about.
+        use rereading = new Timer(Interval = 400)
+        let mutable attempts = 0
+
+        rereading.Tick.Add(fun _ ->
+            rereading.Stop()
+
+            if Config.readable Config.file || attempts >= 4 then
+                attempts <- 0
+                reloadWith false
+            else
+                attempts <- attempts + 1
+                rereading.Start())
+
+        // The events arrive on a thread pool thread and everything downstream of a
+        // reload is WinForms - the menu, the tray text, a balloon - so the handler
+        // does nothing but bounce onto the message loop, where the timer lives.
+        let watcher =
+            Config.watch Config.file (fun () ->
+                onLoop (fun () ->
+                    rereading.Stop()
+                    rereading.Start()))
 
         // Nothing to disambiguate a double-click, so it takes the first app - if
         // the file lists any.
@@ -215,6 +348,18 @@ let run () =
             fun message ->
                 Log.write "app" (Exception message)
                 balloon ToolTipIcon.Error message
+
+        // A layout half-applied is the interesting case: some windows moved, and
+        // the balloon says which ones could not. Warning rather than Error, because
+        // "Chrome has no window open" is a fact about the desk, not a fault.
+        // Marshalled, unlike App's: a layout applied because the hardware changed
+        // runs on the thread pool, and NotifyIcon is a WinForms control like any
+        // other. From the message loop - where the keystroke path already is -
+        // BeginInvoke simply costs one more turn.
+        Layout.onError <-
+            fun message ->
+                Log.note "layout" message
+                onLoop (fun () -> balloon ToolTipIcon.Warning message)
 
         match configProblem with
         | Some problem -> balloon ToolTipIcon.Error problem
@@ -229,6 +374,7 @@ let run () =
             0
         finally
             Chord.uninstall ()
+            watcher |> Option.iter (fun w -> w.Dispose())
             tray.Visible <- false
 
 /// [<EntryPoint>] marks the program's start; the int it returns is the process exit

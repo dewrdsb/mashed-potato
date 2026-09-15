@@ -1,4 +1,4 @@
-// 8 of 11 - the keyboard hook
+// 9 of 12 - the keyboard hook
 //
 // The only part that sees keystrokes. Decides what a key means and hands the work
 // to callbacks rather than doing it here.
@@ -48,7 +48,8 @@ type Handlers =
       Prompt : bool -> unit
       SnapTo : Zone -> unit
       NextMonitor : unit -> unit
-      CycleDisplay : unit -> unit }
+      CycleDisplay : unit -> unit
+      ApplyLayout : unit -> unit }
 
 // These are module level - effectively static fields - for a reason that catches
 // everyone once. Handing a delegate to a C API passes a raw function pointer, and
@@ -156,6 +157,11 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
                         | None when placement.CycleDisplayVk = Some vk ->
                             takeBannerDown ()
                             handlers.CycleDisplay()
+                            swallow
+
+                        | None when placement.ApplyLayoutVk = Some vk ->
+                            takeBannerDown ()
+                            handlers.ApplyLayout()
                             swallow
 
                         // An unmapped key still ends a chord that is open: the
