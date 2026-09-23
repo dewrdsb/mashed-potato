@@ -1,4 +1,4 @@
-// 3 of 12 - the shapes everything else is written in
+// 3 of 13 - the shapes everything else is written in
 //
 // Pure data: no Windows, no JSON, no behaviour. Config parses into these, and the
 // rest of the program reads them.
@@ -23,7 +23,13 @@ type Target =
 
       /// Handed to ShellExecute when none of ExePaths exist. Either a URI scheme or
       /// a bare exe name, which the shell resolves through the App Paths registry key.
-      ShellFallback : string }
+      ShellFallback : string
+
+      /// Part of a browser tab's title. Given, the binding means "that tab" rather
+      /// than "that application": it switches to whichever window holds the tab and
+      /// brings the tab to the front. Two bindings can name the same browser and
+      /// different tabs, which is the point of it.
+      Tab : string option }
 
 /// A fraction of a monitor's width or height. Kept as two integers rather than a
 /// float so complementary zones still meet exactly: 2/3 and 1/3 of 1920 are 1280 and

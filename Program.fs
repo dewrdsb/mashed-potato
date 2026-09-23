@@ -1,4 +1,4 @@
-// 12 of 12 - the entry point
+// 13 of 13 - the entry point
 //
 // Mashed Potato - a tiny AutoHotkey-style chord hotkey daemon for Windows.
 //

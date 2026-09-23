@@ -1,4 +1,4 @@
-// 5 of 12 - launching, focusing and minimizing an application
+// 6 of 13 - launching, focusing and minimizing an application
 //
 // Finding the window that belongs to an app, which is harder than it sounds, and
 // deciding what to do with it.
@@ -12,6 +12,8 @@ module MashedPotato.App
 open System
 open System.Diagnostics
 open System.IO
+open System.Threading
+open System.Threading.Tasks
 
 open Interop
 
@@ -21,6 +23,11 @@ open Interop
 
 /// Set by the host so failures can surface as a tray balloon.
 let mutable onError : string -> unit = ignore
+
+/// Set by the host: runs work on the message loop. Waiting for a launched window
+/// happens on the thread pool - it takes seconds - but the focusing itself belongs
+/// on the UI thread, with everything else here that touches a window.
+let mutable onLoop : (unit -> unit) -> unit = fun work -> work ()
 
 /// GetProcessesByName matches on the image name without ".exe", and returns every
 /// match - a modern browser is dozens of processes, all with the same name. Each
@@ -117,8 +124,129 @@ let windowsFor (target: Target) =
 /// running with no window a person could be looking at - closed to the tray.
 let windowOf (target: Target) = pick (windowsFor target)
 
-/// Launch, focus or minimize - whichever the app's current state calls for.
-let activate (target: Target) =
+/// How long to keep looking for the window of an app that has just been launched.
+/// Long enough for a cold start that has to bring up WSL and a language server;
+/// short enough that a window appearing after it is the user's own doing and should
+/// not be snatched in front of whatever they moved on to.
+let private patience = TimeSpan.FromSeconds 10.0
+let private lookAgainMs = 20
+
+/// Where the wanted tab is, across every window the application has open. A browser
+/// with three windows can have the tab in any of them, and the answer has to be the
+/// window as well as the tab.
+let private tabIn (target: Target) wanted =
+    windowsFor target
+    |> List.tryPick (fun hwnd -> Tabs.find wanted hwnd |> Option.map (fun tab -> hwnd, tab))
+
+/// Brings a browser window to the front and only then switches its tab. The order
+/// is not cosmetic. Selecting a tab in a window that is in the background, then
+/// focusing it, leaves Caps Lock switched on for anyone whose Caps Lock is remapped
+/// to Ctrl by PowerToys Keyboard Manager and still held from the chord - every
+/// time, measured. Focusing first and selecting second never did. Waiting for the
+/// focus to finish matters too, since onLoop only queues it; the wait is bounded so
+/// a hung message loop cannot keep the tab from switching.
+let private focusThenSelect hwnd (tab: Tabs.Tab) =
+    // Not `use`: after a timeout the queued focus still calls Set, and must not
+    // find it disposed. It holds no OS handle unless one is asked for.
+    let focused = new ManualResetEventSlim(false)
+
+    onLoop (fun () ->
+        try
+            focus hwnd
+        finally
+            focused.Set())
+
+    focused.Wait(TimeSpan.FromSeconds 1.0) |> ignore
+    tab.Select()
+
+/// Polls until `look` finds something or the deadline passes.
+let private waitFor (deadline: DateTime) look =
+    let mutable found = None
+
+    while found.IsNone && DateTime.UtcNow < deadline do
+        found <- look ()
+        if found.IsNone then Thread.Sleep lookAgainMs
+
+    found
+
+/// Launching an application does not give it the right to come to the front.
+///
+/// Windows grants the foreground to a process that already has it, or to one the
+/// foreground process started. Mashed is neither: the chord fires while the user is
+/// in some other window, so a program started here is refused the foreground and
+/// gets a flashing taskbar button instead. Most of the applications bound in the
+/// shipped configuration paper over this themselves - Chromium and Electron do the
+/// same AttachThreadInput dance `focus` does - and the ones that do not, like
+/// Neovide, simply ask once, are told no, and open behind whatever was already
+/// there.
+///
+/// So the window is waited for and focused deliberately, through the same path a
+/// second press of the chord would take. Nothing happens if the application managed
+/// it on its own, which is why this changed nothing for the apps that already worked.
+let private settleAfterLaunch (target: Target) =
+    Task.Run(fun () ->
+        try
+            let deadline = DateTime.UtcNow + patience
+
+            match waitFor deadline (fun () -> windowOf target) with
+            | None ->
+                Log.note
+                    "activate"
+                    $"{target.Name}: launched, but no window of a process named '{target.ProcessName}' appeared within {patience.TotalSeconds} seconds, so there was nothing to focus."
+
+            | Some hwnd ->
+                match target.Tab with
+                | None ->
+                    // It got there by itself: leave it be.
+                    if GetForegroundWindow() <> hwnd then onLoop (fun () -> focus hwnd)
+
+                | Some wanted ->
+                    // A browser has a window well before it has the tabs its last
+                    // session ended with, so the tab is waited for separately - and
+                    // against the same deadline, which is what stops a browser that
+                    // never restores the tab from being waited on twice over.
+                    match waitFor deadline (fun () -> tabIn target wanted) with
+                    | Some(holder, tab) -> focusThenSelect holder tab
+
+                    | None ->
+                        Log.note "activate" $"{target.Name}: opened, but no tab matching '{wanted}' appeared, so the window was focused as it was."
+                        onLoop (fun () -> focus hwnd)
+        with error ->
+            Log.write "activate" error)
+    |> ignore
+
+/// Launch, focus or minimize - whichever the app's current state calls for, and for
+/// a binding that names a tab, which tab as well.
+let rec activate (target: Target) =
+    match target.Tab with
+    | Some wanted -> toTab target wanted
+    | None -> toApp target
+
+/// Reading a tab strip is cross-process COM and costs a couple of hundred
+/// milliseconds, so none of it runs on the message loop - that being the thread the
+/// keyboard hook is delivered to. Only the focusing goes back there.
+and private toTab (target: Target) wanted =
+    Task.Run(fun () ->
+        try
+            match tabIn target wanted with
+            // Already looking at it, so the second press means the same thing a
+            // second press always means here: get out of the way.
+            | Some(hwnd, tab) when tab.IsSelected && GetForegroundWindow() = hwnd ->
+                onLoop (fun () -> ShowWindow(hwnd, SW_MINIMIZE) |> ignore)
+
+            | Some(hwnd, tab) -> focusThenSelect hwnd tab
+
+            | None ->
+                if not (List.isEmpty (windowsFor target)) then
+                    Log.note "activate" $"{target.Name}: nothing open has a tab matching '{wanted}', so this was a switch to the application."
+
+                onLoop (fun () -> toApp target)
+        with error ->
+            Log.write "activate" error
+            onLoop (fun () -> toApp target))
+    |> ignore
+
+and private toApp (target: Target) =
     try
         let pids = runningPids target
         let windows = if pids.IsEmpty then [] else windowsOf pids
@@ -138,6 +266,7 @@ let activate (target: Target) =
                     $"{target.Name}: launching - {pids.Count} process(es) named '{target.ProcessName}' are running but none has a visible window, so it is probably closed to the tray."
 
             launch target
+            settleAfterLaunch target
 
         // Every window minimized. This has to be matched before the foreground
         // test, because SW_MINIMIZE does not hand the foreground to anyone else -

@@ -4,6 +4,11 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- For System.Windows.Automation, which Tabs.fs uses to reach a browser's tab
+         strip. It costs nothing at run time: UIAutomationClient lives in the same
+         .NET Desktop Runtime that WinForms already requires, so this adds a
+         reference and not a dependency. -->
+    <UseWPF>true</UseWPF>
     <!-- The executable is Mashed.exe, not MashedPotato.exe: endpoint policy on this
          machine refuses to launch any filename ending in "potato.exe" (a rule aimed
          at Potato Chat). Namespace, display name and config folder are unaffected. -->
@@ -23,6 +28,7 @@
     <Compile Include="Log.fs" />
     <Compile Include="Domain.fs" />
     <Compile Include="Config.fs" />
+    <Compile Include="Tabs.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Snap.fs" />
     <Compile Include="Display.fs" />

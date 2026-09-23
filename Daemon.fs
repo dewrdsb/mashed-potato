@@ -1,4 +1,4 @@
-// 11 of 12 - assembling the program
+// 12 of 13 - assembling the program
 //
 // Tray icon, hidden message-pump window, hook installation and the message loop.
 // The first file that knows about all the others.
@@ -343,6 +343,8 @@ let run () =
             match Config.current |> Option.bind (fun settings -> List.tryHead settings.Launcher.Apps) with
             | Some(_, target) -> App.activate target
             | None -> ())
+
+        App.onLoop <- onLoop
 
         App.onError <-
             fun message ->

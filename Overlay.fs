@@ -1,4 +1,4 @@
-// 10 of 12 - the on-screen banner
+// 11 of 13 - the on-screen banner
 //
 // The one piece of visible user interface.
 //

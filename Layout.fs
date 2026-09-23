@@ -1,4 +1,4 @@
-// 8 of 12 - putting every window where it belongs
+// 9 of 13 - putting every window where it belongs
 //
 // One action: read the layout that fits what is plugged in, and move each window
 // named by it. The only file that knows a desktop can be arranged as a whole rather

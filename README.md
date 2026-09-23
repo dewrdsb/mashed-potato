@@ -87,6 +87,7 @@ modifier set - in which case `placement` is tested first.
 | `processName` | the **image name**, as shown in Task Manager's *Details* tab - not the app's display name. VS Code is `Code`, not `Visual Studio Code`. A `.exe` suffix is stripped for you |
 | `paths` | launch candidates, first one that exists wins; `%VARS%` are expanded |
 | `shellFallback` | used when no path exists - a URI scheme, or a bare exe name |
+| `tab` | part of a browser tab's title; the binding then means that tab rather than just that application |
 | `side` | `left`, `right`, `top`, `bottom`, `topleft`, `topright`, `bottomleft`, `bottomright`, `center` |
 | `width` / `height` | a fraction of the monitor on that axis - `1`, `1/2`, `2/3`; omit for the whole axis |
 
@@ -202,14 +203,15 @@ design review.
 | 2 | `Log.fs` | `mashedpotato.log`, because a tray daemon fails invisibly |
 | 3 | `Domain.fs` | pure data - no Windows, no JSON, no behaviour |
 | 4 | `Config.fs` | reading `mashedpotato.json` into those types, and noticing when it changes |
-| 5 | `App.fs` | launch / focus / minimize an application |
-| 6 | `Snap.fs` | move and resize the current window |
-| 7 | `Display.fs` | cycling the desktop topology |
-| 8 | `Layout.fs` | arranging every window at once |
-| 9 | `Chord.fs` | the keyboard hook and what a key means |
-| 10 | `Overlay.fs` | the on-screen banner |
-| 11 | `Daemon.fs` | tray icon, message pump, assembly |
-| 12 | `Program.fs` | entry point |
+| 5 | `Tabs.fs` | the tabs inside a browser window |
+| 6 | `App.fs` | launch / focus / minimize an application |
+| 7 | `Snap.fs` | move and resize the current window |
+| 8 | `Display.fs` | cycling the desktop topology |
+| 9 | `Layout.fs` | arranging every window at once |
+| 10 | `Chord.fs` | the keyboard hook and what a key means |
+| 11 | `Overlay.fs` | the on-screen banner |
+| 12 | `Daemon.fs` | tray icon, message pump, assembly |
+| 13 | `Program.fs` | entry point |
 
 Two files beside them are not code: `mashed.ico`, and `icon/` holding the artwork it
 was made from together with the script that makes it. See [The icon](#the-icon).
@@ -282,6 +284,115 @@ fallback is a bare `wt.exe`, which resolves because that same WindowsApps folder
 is on `PATH`. (`shell:AppsFolder\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App`
 would be a third route if the alias is ever turned off in
 Settings > Apps > Advanced app settings > App execution aliases.)
+
+## Binding a browser tab
+
+An app binding with a `tab` means "that tab", not just "that browser":
+
+    { "key": "M", "name": "Firefox Mail", "processName": "Firefox",
+      "tab": "Inbox", "paths": [ ... ], "shellFallback": "firefox" }
+
+`Ctrl+K, M` now switches to whichever Firefox window holds a tab whose title
+contains *Inbox*, brings that tab to the front, and focuses the window. The plain
+Firefox binding on `F` is untouched; two bindings naming the same browser and
+different tabs is the entire point.
+
+Pressing it while that tab is already the one showing minimizes, the same as every
+other binding. Pressing it while a *different* tab is showing switches to the wanted
+one instead of minimizing - which is the behaviour that makes it worth having.
+
+`tab` matches **part of the title**, case-insensitively, and the title is all there
+is: a tab strip does not publish URLs. The first match wins, across every window the
+browser has open.
+
+### Why the accessibility API and not the debugging port
+
+UI Automation is the accessibility API - the one screen readers use. An application
+publishes a tree of elements with roles and *patterns*, small interfaces saying what
+can be done to a thing. A tab has the SelectionItem pattern, and SelectionItem has a
+`Select` method, which is exactly "switch to this tab". Nothing has to be enabled,
+no flag, no restart, no port.
+
+Every other route to the same place is worse:
+
+* **The remote debugging port.** CDP or WebDriver BiDi can do it, but the browser
+  has to be started with `--remote-debugging-port`, which means a restart and leaves
+  a port open that any local process can drive the browser through. A high price for
+  switching tabs.
+* **An extension with native messaging** is the sanctioned route, and needs an
+  extension built, signed and installed.
+* **Sending `Ctrl+1`..`8`** picks a tab by position, which changes every time a tab
+  is opened or closed.
+
+None of this is Firefox-specific: it is whatever the window puts in its
+accessibility tree, so a browser is just the common case. Only Firefox was measured
+here.
+
+It is not free. A browser builds its accessibility tree the first time a client asks
+for it and maintains it afterwards - the same work it does for any screen reader.
+Nothing asks unless a binding names a tab.
+
+Measured on Firefox 156, twelve tabs open:
+
+| | |
+|---|---|
+| finding the tab strip | 227ms |
+| reading all twelve tabs | 235ms |
+| switching tab | ~420ms |
+
+Which is why none of it runs on the message loop: reading a tab strip is
+cross-process COM, and that thread is where the keyboard hook is delivered. It runs
+on the thread pool - where Microsoft asks UI Automation clients to call from anyway
+- and only the focusing is posted back.
+
+The window is focused *before* the tab is switched, and the switch waits for the
+focus to finish. The other order - switch a background window's tab, then bring it
+forward - leaves Caps Lock on when Caps Lock is remapped to Ctrl by PowerToys
+Keyboard Manager and is still held from the chord. With the keys injected, that
+happened in 5 of 6 runs; focus-first, 0 of 6.
+
+A launch is handled too, and needs the extra step: a browser has a window well
+before it has the tabs its last session ended with, so the window is waited for,
+then the tab, both against the same deadline.
+
+### Focusing what was just launched
+
+Launching an application does not give it the right to come to the front, and this
+is the whole of why a freshly launched window can open behind everything.
+
+Windows grants the foreground to a process that already has it, or to one the
+foreground process started. Mashed is neither - the chord fires while you are in
+some other window - so a program started here is refused the foreground and gets a
+flashing taskbar button instead. Most of the applications bound in the shipped
+configuration hide this by doing something about it themselves: Chromium and
+Electron run the same `AttachThreadInput` borrow [`focus` does](#focusing-without-flickering-the-taskbar).
+The ones that do not just ask once, are told no, and open behind.
+
+Neovide is one of those, and measured:
+
+| | |
+|---|---|
+| window appears | 1.57s after launch |
+| took the foreground by itself | no |
+| after `focus` | yes |
+
+So a launch is followed by a wait for the window, and then the same `focus` a second
+press of the chord would have used - which is why pressing the chord twice always
+worked and once did not. Nothing happens if the application managed it on its own,
+so this changed nothing for the ones that already worked.
+
+The wait is on the thread pool, because it takes seconds; the focusing is posted
+back to the message loop, with everything else that touches a window. It gives up
+after ten seconds - long enough for a cold start that has to bring up WSL and a
+language server, short enough that a window appearing later is your own doing and
+should not be snatched in front of whatever you moved on to.
+
+Giving up is logged, and names the `processName` it was looking for:
+
+    Claude: launched, but no window of a process named 'claudde' appeared
+    within 10 seconds, so there was nothing to focus.
+
+which is the quickest way to find a misspelled one.
 
 ### When an app launches instead of switching
 

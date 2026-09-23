@@ -1,4 +1,4 @@
-// 4 of 12 - reading mashedpotato.json
+// 4 of 13 - reading mashedpotato.json
 //
 // The only place that knows the file format. Turns JSON into the Domain types, and
 // holds the settings currently in force.
@@ -28,7 +28,8 @@ module Dto =
           name : string
           processName : string
           paths : string array
-          shellFallback : string }
+          shellFallback : string
+          tab : string }
 
     [<CLIMutable>]
     type Zone =
@@ -348,7 +349,10 @@ let private interpret (root: Dto.Root) =
                 orEmpty app.paths
                 |> Array.map Environment.ExpandEnvironmentVariables
                 |> List.ofArray
-              ShellFallback = app.shellFallback })
+              ShellFallback = app.shellFallback
+
+              Tab =
+                if String.IsNullOrWhiteSpace app.tab then None else Some(app.tab.Trim()) })
         |> List.ofArray
 
     // A layout names apps rather than redefining them, so the two sections cannot

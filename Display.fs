@@ -1,4 +1,4 @@
-// 7 of 12 - the desktop topology
+// 8 of 13 - the desktop topology
 //
 // One action: re-train the link to an external display by switching the desktop to
 // internal-only and straight back to extend.

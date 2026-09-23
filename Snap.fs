@@ -1,4 +1,4 @@
-// 6 of 12 - moving and resizing the current window
+// 7 of 13 - moving and resizing the current window
 //
 // Zone geometry, the invisible border windows carry, and moving between monitors.
 //
