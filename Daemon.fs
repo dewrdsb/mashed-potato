@@ -352,8 +352,9 @@ let run () =
                 balloon ToolTipIcon.Error message
 
         // A layout half-applied is the interesting case: some windows moved, and
-        // the balloon says which ones could not. Warning rather than Error, because
-        // "Chrome has no window open" is a fact about the desk, not a fault.
+        // the balloon says which ones could not. Warning rather than Error: a
+        // monitor the profile names being unplugged is a fact about the desk, not a
+        // fault. Apps with nothing open never get here - Layout only logs those.
         // Marshalled, unlike App's: a layout applied because the hardware changed
         // runs on the thread pool, and NotifyIcon is a WinForms control like any
         // other. From the message loop - where the keystroke path already is -

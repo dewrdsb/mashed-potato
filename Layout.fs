@@ -180,24 +180,34 @@ let private windowsOf (slot: Slot) =
 /// not running are skipped rather than launched: a launch would have to be waited on
 /// before its window could be placed, and a layout that sometimes takes ten seconds
 /// is worse than one that says what it could not do.
+///
+/// An app with no window open is not a failure, though - a profile lists everything
+/// that belongs on a monitor, and most of it is closed most of the time. Those only
+/// reach the log. A monitor that is not attached still gets a balloon, since that
+/// means the profile itself does not fit.
 let private carryOut (screens: Monitor array) (profile: LayoutProfile) =
     let skipped = ResizeArray<string>()
+    let closed = ResizeArray<string>()
 
     for slot in profile.Slots do
         match resolve slot.Monitor screens with
         | None -> skipped.Add $"{slot.Target.Name}: {describeRef slot.Monitor} is not attached"
         | Some monitor ->
             match windowsOf slot with
-            | [] -> skipped.Add $"{slot.Target.Name} has no window open"
+            | [] -> closed.Add slot.Target.Name
             | windows -> for hwnd in windows do put slot monitor hwnd
 
     let attached = screens |> Array.map (fun screen -> screen.Description) |> String.concat ", "
-    let placed = profile.Slots.Length - skipped.Count
+    let placed = profile.Slots.Length - skipped.Count - closed.Count
     Log.note "layout" $"Applied '{profile.Name}' to {placed} of {profile.Slots.Length} windows ({attached})."
 
+    // Built outside the interpolations: an F# interpolated string cannot carry a
+    // string literal inside its own braces.
+    if closed.Count > 0 then
+        let listed = String.Join(", ", closed)
+        Log.note "layout" $"{profile.Name}: nothing open for {listed}"
+
     if skipped.Count > 0 then
-        // Built outside the interpolation: an F# interpolated string cannot carry a
-        // string literal inside its own braces.
         let listed = String.Join(", ", skipped)
         onError $"{profile.Name}: {listed}"
 

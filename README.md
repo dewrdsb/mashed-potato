@@ -1046,8 +1046,11 @@ through, so the invisible-border correction happens in exactly one place.
 
 Apps that are not running are **skipped, not launched**. Launching would mean
 waiting for a window to exist before it could be placed, and a keystroke that
-sometimes takes ten seconds is worse than one that says what it could not do. What
-it could not do arrives as a tray balloon: *"Office: Spotify has no window open"*.
+sometimes takes ten seconds is worse than one that says what it could not do. And
+they are skipped **quietly**: a profile lists everything that belongs on a monitor,
+most of it is closed most of the time, so an app with nothing open only gets a line
+in the log (*"Office: nothing open for Spotify, Word"*). The one thing that still
+raises a tray balloon is a monitor the profile names not being attached.
 
 ### The three profiles as shipped
 
