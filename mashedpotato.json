@@ -25,7 +25,7 @@
         "key": "M",
         "name": "Firefox Mail",
         "processName": "Firefox",
-        "tab": "WATERLOO DISTRICT REGION SCHOOL BOARD Mail",
+        "tab": "SCHOOL BOARD Mail",
         "paths": [
           "C:\\Users\\wyattd\\AppData\\Local\\Mozilla Firefox\\firefox.exe"
         ],
@@ -35,7 +35,7 @@
         "key": "C",
         "name": "Firefox Chat",
         "processName": "Firefox",
-        "tab": "- Chat",
+        "tab": " - Chat",
         "paths": [
           "C:\\Users\\wyattd\\AppData\\Local\\Mozilla Firefox\\firefox.exe"
         ],
