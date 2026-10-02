@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Windows, like the app: the domain is written in System.Drawing rectangles and
+         WinForms key codes, and Config resolves keys through the keyboard layout. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- Coverage, measured by coverlet on every `dotnet test` and failed below the
+       threshold. Only the modules with logic a test can reach are counted: the rest
+       is Win32 calls - hooks, focus, UI Automation, display topology - which a unit
+       test cannot exercise, and counting it would make the number mean nothing.
+
+       Even within those modules most lines are Win32 calls (Snap.place, Layout.apply,
+       the hook plumbing in Chord), so the total sits well under 100% with every pure
+       function covered: Config is at 86%, Chord at 44% with all of Chord.step
+       covered, Snap and Layout at about 20%.
+
+       The threshold is a ratchet, line then branch, set just under what the tests
+       reach today. Raise it when coverage goes up; never lower it to get a build
+       through. -->
+  <PropertyGroup>
+    <CollectCoverage>true</CollectCoverage>
+    <Include>[Mashed]MashedPotato.Config*,[Mashed]MashedPotato.Snap*,[Mashed]MashedPotato.Layout*,[Mashed]MashedPotato.Chord*</Include>
+    <Threshold>57,68</Threshold>
+    <ThresholdType>line,branch</ThresholdType>
+    <ThresholdStat>total</ThresholdStat>
+    <CoverletOutputFormat>cobertura</CoverletOutputFormat>
+    <CoverletOutput>$(MSBuildThisFileDirectory)TestResults/</CoverletOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="ConfigTests.fs" />
+    <Compile Include="SnapTests.fs" />
+    <Compile Include="LayoutTests.fs" />
+    <Compile Include="ChordTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="FsCheck.Xunit" Version="3.3.0" />
+    <PackageReference Include="coverlet.msbuild" Version="6.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../MashedPotato.fsproj" />
+  </ItemGroup>
+
+</Project>

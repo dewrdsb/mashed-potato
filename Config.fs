@@ -478,6 +478,14 @@ let private interpret (root: Dto.Root) =
 
       Layouts = layouts }
 
+/// The text of a configuration file to Settings, or an exception whose message says
+/// what is wrong with it. Kept apart from `load` so it can be exercised without a
+/// file in %APPDATA% or the mutable `current` - which is what the tests do.
+let internal parse (json: string) =
+    let root = JsonSerializer.Deserialize<Dto.Root>(json, reading)
+    if obj.ReferenceEquals(root, null) then failwith "the file is empty"
+    interpret root
+
 /// Environment.SpecialFolder is the portable way to name the folders Windows moves
 /// around between versions - never hard-code C:\Users\... ApplicationData is
 /// %APPDATA%, which roams between machines on a domain account; LocalApplicationData
@@ -553,10 +561,7 @@ let load () =
             else
                 failwith $"no configuration at {file}, and no mashedpotato.json beside the executable to install from"
 
-        let root = JsonSerializer.Deserialize<Dto.Root>(File.ReadAllText file, reading)
-        if obj.ReferenceEquals(root, null) then failwith "the file is empty"
-
-        current <- Some(interpret root)
+        current <- Some(parse (File.ReadAllText file))
         None
     with error ->
         Log.write "config" error

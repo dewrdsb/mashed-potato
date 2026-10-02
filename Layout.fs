@@ -58,7 +58,7 @@ let private monitors () =
 let private contains (needle: string) (haystack: string) =
     haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
 
-let private resolve reference (screens: Monitor array) =
+let internal resolve reference (screens: Monitor array) =
     match reference with
     | MonitorRef.Index number -> screens |> Array.tryFind (fun screen -> screen.Number = number)
     | MonitorRef.Primary -> screens |> Array.tryFind (fun screen -> screen.Primary)
@@ -72,7 +72,7 @@ let private describeRef reference =
 
 /// Where a slot's rect lands on a monitor. Built from Snap.span, so a layout and a
 /// snap round a fraction the same way and windows meant to meet actually do.
-let private target (rect: FractionRect) (area: Rectangle) =
+let internal target (rect: FractionRect) (area: Rectangle) =
     Rectangle(
         area.Left + Snap.span rect.Left area.Width,
         area.Top + Snap.span rect.Top area.Height,
@@ -95,10 +95,10 @@ let private look () =
 /// `"monitors": 2` silently stops matching the desk it was written for. What the
 /// office layout actually needs is not "two monitors" but "monitors 1 and 2 exist",
 /// which stays true either way.
-let private reachable (screens: Monitor array) (profile: LayoutProfile) =
+let internal reachable (screens: Monitor array) (profile: LayoutProfile) =
     profile.Slots |> List.forall (fun slot -> (resolve slot.Monitor screens).IsSome)
 
-let private matching (profiles: LayoutProfile list) (screens: Monitor array) (devices: Lazy<string list>) =
+let internal matching (profiles: LayoutProfile list) (screens: Monitor array) (devices: Lazy<string list>) =
     let docked wanted = devices.Value |> List.exists (contains wanted)
 
     profiles

@@ -94,6 +94,96 @@ let private isPassThroughApp (names: string array) =
             names
             |> Array.exists (fun excluded -> String.Equals(excluded, name, StringComparison.OrdinalIgnoreCase))
 
+/// One thing a resolved keystroke asks for. Each maps to a field of Handlers; they
+/// are values rather than calls so the decision can be made - and tested - apart
+/// from the hook that acts on it.
+[<RequireQualifiedAccess>]
+type internal Effect =
+    | Prompt of visible: bool
+    | Toggle of Target
+    | SnapTo of Zone
+    | NextMonitor
+    | CycleDisplay
+    | ApplyLayout
+
+/// What a keystroke comes to: whether a chord is open afterwards, whether the key
+/// stops here, and what to do about it, in order.
+type internal Outcome =
+    { Armed : bool
+      Swallow : bool
+      Effects : Effect list }
+
+/// Every decision the hook makes, with nothing in it that touches Windows. The two
+/// questions that do - which modifiers are held, and whether the foreground app is
+/// one to stay out of - are passed in as functions, so each is only asked when the
+/// answer can change the outcome, the way the hook always asked them.
+let internal step
+    (settings: Settings option)
+    armed
+    vk
+    injected
+    (held: unit -> Set<Modifier>)
+    (inPassThroughApp: string array -> bool)
+    =
+    let passOn = { Armed = armed; Swallow = false; Effects = [] }
+    let swallow armed effects = { Armed = armed; Swallow = true; Effects = effects }
+
+    // Ignore synthetic input, and let modifiers alone keep the chord open so that
+    // "Ctrl+K, Ctrl+C" behaves the same as "Ctrl+K, C".
+    if injected || isModifier vk then
+        passOn
+    else
+        match settings with
+        // No configuration read, so nothing here is ours to take.
+        | None -> passOn
+
+        | Some settings ->
+            let held = held ()
+            let launcher = settings.Launcher
+            let placement = settings.Placement
+
+            // Cancel any half-typed chord on the way past, whatever the key turns
+            // out to be.
+            let takeBannerDown = if armed then [ Effect.Prompt false ] else []
+
+            // Placement is checked first: its prefix is held down, so the keystroke
+            // is unambiguous the moment the modifiers match.
+            if held = placement.Prefix.Modifiers then
+                let resolve effect = swallow false (takeBannerDown @ [ effect ])
+
+                match placement.Zones |> List.tryFind (fun zone -> zone.Key = vk) with
+                | Some zone -> resolve (Effect.SnapTo zone)
+                | None when placement.NextMonitorVk = Some vk -> resolve Effect.NextMonitor
+                | None when placement.CycleDisplayVk = Some vk -> resolve Effect.CycleDisplay
+                | None when placement.ApplyLayoutVk = Some vk -> resolve Effect.ApplyLayout
+
+                // An unmapped key still ends a chord that is open: the banner comes
+                // down and the keystroke stops here rather than reaching the window
+                // underneath.
+                | None when armed -> swallow false takeBannerDown
+
+                | None -> passOn
+
+            elif armed then
+                // The banner is up. Every path from here takes it down.
+                match launcher.Apps |> List.tryFind (fun (chordKey, _) -> chordKey = vk) with
+                | Some(_, target) -> swallow false [ Effect.Prompt false; Effect.Toggle target ]
+
+                // Nothing is bound to this key, so it belongs to the chord rather
+                // than to the application: Escape, the prefix again and every other
+                // key alike dismiss the banner and stop here. Passing the key on
+                // instead let a mistyped chord fire whatever that key means in the
+                // window underneath.
+                | None -> swallow false [ Effect.Prompt false ]
+
+            elif held = launcher.Prefix.Modifiers
+                 && launcher.Prefix.Key = Some vk
+                 && not (inPassThroughApp launcher.PassThroughIn) then
+                swallow true [ Effect.Prompt true ]
+
+            else
+                passOn
+
 /// Runs on whatever thread the OS delivers keystrokes to. Keep it cheap: Windows
 /// silently drops a low-level hook that takes too long to return.
 let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: nativeint) =
@@ -103,6 +193,15 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
     // KBDLLHOOKSTRUCT describing the key.
     let swallow = 1n
     let passOn () = CallNextHookEx(hook, nCode, wParam, lParam)
+
+    let perform effect =
+        match effect with
+        | Effect.Prompt visible -> handlers.Prompt visible
+        | Effect.Toggle target -> handlers.Toggle target
+        | Effect.SnapTo zone -> handlers.SnapTo zone
+        | Effect.NextMonitor -> handlers.NextMonitor()
+        | Effect.CycleDisplay -> handlers.CycleDisplay()
+        | Effect.ApplyLayout -> handlers.ApplyLayout()
 
     // Nothing may escape this function. Windows calls it across a native boundary,
     // where an exception does not reach the message loop's handler - it terminates
@@ -117,92 +216,12 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
             // copies those bytes into a managed struct, laid out per the
             // StructLayout attribute declared on it.
             let key = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam)
-            let vk = int key.vkCode
+            let injected = (key.flags &&& LLKHF_INJECTED) <> 0u
 
-            // Ignore synthetic input, and let modifiers alone keep the chord open so
-            // that "Ctrl+K, Ctrl+C" behaves the same as "Ctrl+K, C".
-            if (key.flags &&& LLKHF_INJECTED) <> 0u || isModifier vk then
-                passOn ()
-            else
-                match Config.current with
-                // No configuration read, so nothing here is ours to take.
-                | None -> passOn ()
-
-                | Some settings ->
-                    let held = heldModifiers ()
-                    let launcher = settings.Launcher
-                    let placement = settings.Placement
-
-                    // Cancel any half-typed chord on the way past, whatever the key
-                    // turns out to be.
-                    let takeBannerDown () =
-                        if armed then
-                            armed <- false
-                            handlers.Prompt false
-
-                    // Placement is checked first: its prefix is held down, so the
-                    // keystroke is unambiguous the moment the modifiers match.
-                    if held = placement.Prefix.Modifiers then
-                        match placement.Zones |> List.tryFind (fun zone -> zone.Key = vk) with
-                        | Some zone ->
-                            takeBannerDown ()
-                            handlers.SnapTo zone
-                            swallow
-
-                        | None when placement.NextMonitorVk = Some vk ->
-                            takeBannerDown ()
-                            handlers.NextMonitor()
-                            swallow
-
-                        | None when placement.CycleDisplayVk = Some vk ->
-                            takeBannerDown ()
-                            handlers.CycleDisplay()
-                            swallow
-
-                        | None when placement.ApplyLayoutVk = Some vk ->
-                            takeBannerDown ()
-                            handlers.ApplyLayout()
-                            swallow
-
-                        // An unmapped key still ends a chord that is open: the
-                        // banner comes down and the keystroke stops here rather than
-                        // reaching the window underneath.
-                        | None when armed ->
-                            takeBannerDown ()
-                            swallow
-
-                        | None -> passOn ()
-
-                    elif armed then
-                        // The banner is up. Every path from here takes it down.
-                        let disarm () =
-                            armed <- false
-                            handlers.Prompt false
-
-                        match launcher.Apps |> List.tryFind (fun (chordKey, _) -> chordKey = vk) with
-                        | Some(_, target) ->
-                            disarm ()
-                            handlers.Toggle target
-                            swallow
-
-                        // Nothing is bound to this key, so it belongs to the chord
-                        // rather than to the application: Escape, the prefix again
-                        // and every other key alike dismiss the banner and stop
-                        // here. Passing the key on instead let a mistyped chord fire
-                        // whatever that key means in the window underneath.
-                        | None ->
-                            disarm ()
-                            swallow
-
-                    elif held = launcher.Prefix.Modifiers
-                         && launcher.Prefix.Key = Some vk
-                         && not (isPassThroughApp launcher.PassThroughIn) then
-                        armed <- true
-                        handlers.Prompt true
-                        swallow
-
-                    else
-                        passOn ()
+            let outcome = step Config.current armed (int key.vkCode) injected heldModifiers isPassThroughApp
+            armed <- outcome.Armed
+            outcome.Effects |> List.iter perform
+            if outcome.Swallow then swallow else passOn ()
 
     with error ->
         // Leave the latch clear so a failure cannot stick the chord armed forever.

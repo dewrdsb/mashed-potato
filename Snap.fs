@@ -47,7 +47,7 @@ let internal span (fraction: Fraction) total =
 /// Anchoring End at `total - size` rather than at an accumulated offset is what
 /// keeps complementary zones flush: a 1/3 zone anchored right starts at exactly
 /// where a 2/3 zone anchored left finishes.
-let private offset anchor total size =
+let internal offset anchor total size =
     match anchor with
     | Anchor.Start -> 0
     | Anchor.Middle -> (total - size) / 2
@@ -58,7 +58,7 @@ let private offset anchor total size =
 /// The area passed in is the monitor's *working area* - its full bounds minus the
 /// taskbar and anything else docked to an edge. WinForms' Screen class provides
 /// both; working area is almost always the one you want for placing windows.
-let private target (zone: Zone) (area: Rectangle) =
+let internal target (zone: Zone) (area: Rectangle) =
     let width = span zone.Width area.Width
     let height = span zone.Height area.Height
 
@@ -92,7 +92,7 @@ let internal orderedScreens () =
 /// size, same offset within the work area, clamped so a smaller destination cannot
 /// push it off screen, and shrunk if it would not fit at all. Kept separate from
 /// the Win32 calls so it can be exercised on its own.
-let private movedBetween (source: Rectangle) (destination: Rectangle) (frame: Rectangle) =
+let internal movedBetween (source: Rectangle) (destination: Rectangle) (frame: Rectangle) =
     let width = min frame.Width destination.Width
     let height = min frame.Height destination.Height
 

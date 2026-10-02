@@ -46,6 +46,9 @@
          run time. Named explicitly, because the default logical name is derived
          from RootNamespace and is easy to get wrong from the other side. -->
     <EmbeddedResource Include="mashed.ico" LogicalName="mashed.ico" />
+    <!-- The tests reach the pure parts of Config, Snap and Layout, which are internal
+         rather than private for exactly that reason. -->
+    <InternalsVisibleTo Include="MashedPotato.Tests" />
   </ItemGroup>
 
 </Project>
