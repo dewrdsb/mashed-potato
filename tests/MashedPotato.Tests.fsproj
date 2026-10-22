@@ -26,7 +26,7 @@
   <PropertyGroup>
     <CollectCoverage>true</CollectCoverage>
     <Include>[Mashed]MashedPotato.Config*,[Mashed]MashedPotato.Snap*,[Mashed]MashedPotato.Layout*,[Mashed]MashedPotato.Chord*</Include>
-    <Threshold>57,68</Threshold>
+    <Threshold>58,70</Threshold>
     <ThresholdType>line,branch</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
     <CoverletOutputFormat>cobertura</CoverletOutputFormat>

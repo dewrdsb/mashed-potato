@@ -187,10 +187,10 @@ let run () =
     // seconds - collapses into one pass, after the last of them.
     use settling = new Timer()
 
-    // Windows calls a WH_KEYBOARD_LL hook on the thread that installed it, so the
-    // callback already runs here. This hidden window is what defers the actual work
-    // out of the callback, which has to return promptly or Windows drops the hook.
-    // Putting the banner up is cheap enough to do inline.
+    // The keyboard hook runs on a thread of its own (see Chord.install), and this
+    // hidden window is how its work reaches this one: windows and the banner may
+    // only be touched from the thread that created them, and the callback has to
+    // return promptly or Windows drops the hook.
     use pump =
         new Pump(fun () ->
             match Config.current with
@@ -216,7 +216,7 @@ let run () =
 
     // The decision walks the whole device tree, and the placement can block on an
     // unresponsive application, so neither happens here: this tick is on the
-    // message loop, which is also the thread the keyboard hook is delivered to.
+    // message loop, which also raises the banner and focuses what a chord asks for.
     settling.Tick.Add(fun _ ->
         settling.Stop()
 
@@ -371,8 +371,8 @@ let run () =
         try
             // The message loop. This blocks until Application.ExitThread is called,
             // pulling messages off this thread's queue and dispatching them - which
-            // is what makes the tray icon respond, the banner paint, BeginInvoke
-            // work, and the keyboard hook fire at all.
+            // is what makes the tray icon respond, the banner paint, and BeginInvoke
+            // work at all.
             Application.Run()
             0
         finally

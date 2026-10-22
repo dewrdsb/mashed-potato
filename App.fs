@@ -223,8 +223,8 @@ let rec activate (target: Target) =
     | None -> toApp target
 
 /// Reading a tab strip is cross-process COM and costs a couple of hundred
-/// milliseconds, so none of it runs on the message loop - that being the thread the
-/// keyboard hook is delivered to. Only the focusing goes back there.
+/// milliseconds, so none of it runs on the message loop, where it would hold up the
+/// banner and every other chord. Only the focusing goes back there.
 and private toTab (target: Target) wanted =
     Task.Run(fun () ->
         try

@@ -11,6 +11,8 @@ module MashedPotato.Chord
 
 open System
 open System.Runtime.InteropServices
+open System.Threading
+open System.Threading.Tasks
 open System.Windows.Forms
 
 open Interop
@@ -26,8 +28,8 @@ open Interop
 // Three consequences shape the code below:
 //
 // * Windows calls the hook *on the thread that installed it*, by posting to that
-//   thread's message queue. So the callback runs on our UI thread, and the app
-//   needs a running message loop for keystrokes to arrive at all.
+//   thread's message queue. So that thread needs a running message loop for
+//   keystrokes to arrive at all. Here it is a thread of its own - see `install`.
 //
 // * It must return quickly. Windows gives a low-level hook a deadline (a few
 //   hundred milliseconds by default) and silently stops calling one that misses
@@ -65,6 +67,25 @@ let mutable private callback : LowLevelKeyboardProc = null
 /// invisible to the person typing.
 let mutable private armed = false
 
+/// The key whose press the hook last swallowed, and when it last went down. A held
+/// key auto-repeats - Windows sends the key down over and over, with nothing in the
+/// event to say it is a repeat - so without this, holding K a moment too long after
+/// Ctrl+K arrived as a second press of an unbound key and took the banner straight
+/// back down. The chord looked as if it had done nothing.
+let mutable private swallowedHeld : (int * uint32) option = None
+
+/// Windows' longest auto-repeat delay is one second. A gap longer than that is a
+/// fresh press whose release the hook never saw - a lock screen in between, say.
+let private repeatWindowMs = 1100u
+
+/// Whether a key going down is the auto-repeat of a press that was swallowed. Event
+/// times are milliseconds since boot; unsigned subtraction stays right across the
+/// 49-day wrap.
+let internal isRepeat swallowedHeld vk (time: uint32) =
+    match swallowedHeld with
+    | Some(heldVk, since) -> heldVk = vk && time - since < repeatWindowMs
+    | None -> false
+
 let private isModifier vk =
     match enum<Keys> vk with
     | Keys.ShiftKey
@@ -73,6 +94,21 @@ let private isModifier vk =
     | Keys.LWin
     | Keys.RWin -> true
     | key -> key >= Keys.LShiftKey && key <= Keys.RMenu
+
+/// The watch on a swallowed key, once a key goes up: its own release ends it.
+let internal released swallowedHeld vk =
+    match swallowedHeld with
+    | Some(heldVk, _) when heldVk = vk -> None
+    | other -> other
+
+/// The watch on a swallowed key, once a key goes down and the hook has decided what
+/// to do with it. Only the most recently pressed key repeats, so any other key
+/// going down ends the watch on the last one; modifiers and injected keys are not
+/// pressed in that sense and leave it be.
+let internal pressed swallowedHeld vk time injected swallowed =
+    if injected || isModifier vk then swallowedHeld
+    elif swallowed then Some(vk, time)
+    else None
 
 /// The modifiers held right now, as a set. Comparing sets for *equality* is what
 /// makes prefixes exclusive: a "Ctrl" prefix does not fire while Ctrl+Shift is
@@ -184,8 +220,220 @@ let internal step
             else
                 passOn
 
-/// Runs on whatever thread the OS delivers keystrokes to. Keep it cheap: Windows
-/// silently drops a low-level hook that takes too long to return.
+// WHEN THE PREFIX DOES NOTHING
+//
+// Three ways Ctrl+K can go missing, and each leaves a different line in the log.
+// They exist to tell this program's faults from those of a key remapper (PowerToys
+// Keyboard Manager turning Caps Lock into Ctrl, say), which works by swallowing the
+// real key and injecting the one it stands for.
+//
+// * The hook ran late. Its thread was busy, Windows stopped waiting, and the key
+//   went on without it - this program's fault.
+// * The prefix key came with extra modifiers held. If only Ctrl was down, something
+//   has left a modifier stuck.
+// * The prefix key came before the remapper's Ctrl did, so it arrived as a plain
+//   letter. Someone in the chain of hooks was slow enough for the order to flip.
+
+/// How late the hook may run before it is worth a line. Windows' patience
+/// (LowLevelHooksTimeout) is a few hundred milliseconds.
+let private lateMs = 150u
+
+/// What the diagnostics remember from one keystroke to the next. Times are
+/// milliseconds since boot, as Windows stamps keystrokes.
+type internal Watch =
+    { /// No more than one "ran late" line per stall: every key typed during one
+      /// is late.
+      LastLateNote : uint32
+      /// When the prefix key last went past as a plain letter, for comparing with
+      /// the next injected Ctrl.
+      PlainPrefixAt : uint32 option }
+
+let internal unwatched = { LastLateNote = 0u; PlainPrefixAt = None }
+
+let private isCtrl vk =
+    match enum<Keys> vk with
+    | Keys.ControlKey
+    | Keys.LControlKey
+    | Keys.RControlKey -> true
+    | _ -> false
+
+/// What a key going down says about the three failures, as lines for the log. As
+/// with `step`, nothing here touches Windows: `pressedAt` is the keystroke's own
+/// time, `now` the hook's, and the held modifiers are only asked for when they
+/// matter.
+let internal watch
+    (settings: Settings option)
+    (watching: Watch)
+    vk
+    (pressedAt: uint32)
+    (now: uint32)
+    injected
+    swallowed
+    (held: unit -> Set<Modifier>)
+    =
+    let late = now - pressedAt
+
+    let watching, lateNotes =
+        if not injected && late > lateMs && now - watching.LastLateNote > 5000u then
+            { watching with LastLateNote = now },
+            [ $"Ran {late} ms after a key was pressed. Keys pressed meanwhile may have gone on without this program seeing them." ]
+        else
+            watching, []
+
+    let plainPrefixAt, prefixNotes =
+        match settings with
+        | Some _ when injected && isCtrl vk ->
+            match watching.PlainPrefixAt with
+            | Some at when now - at < 100u ->
+                None,
+                [ "The prefix key arrived before an injected Ctrl, so it went through as a plain letter. A key remapper's Ctrl was overtaken." ]
+            | _ -> None, []
+
+        | Some settings when not injected && not (isModifier vk) ->
+            if settings.Launcher.Prefix.Key = Some vk && not swallowed then
+                let held = held ()
+                let wanted = settings.Launcher.Prefix.Modifiers
+
+                if held.IsEmpty then
+                    Some now, []
+                elif Set.isSubset wanted held && held <> wanted then
+                    let names = held |> Seq.map string |> String.concat "+"
+                    None,
+                    [ $"The prefix key arrived with {names} held, so the chord did not open. If only the prefix's own modifiers were down, one is stuck." ]
+                else
+                    None, []
+            else
+                None, []
+
+        | _ -> watching.PlainPrefixAt, []
+
+    { watching with PlainPrefixAt = plainPrefixAt }, lateNotes @ prefixNotes
+
+let mutable private watching = unwatched
+
+// REMAPPING A KEY
+//
+// A low-level hook cannot change a keystroke, only stop it. So a remap stops the
+// key pressed and injects the one it stands for, with SendInput - which is all
+// PowerToys Keyboard Manager does, and where it goes wrong. An injection joins the
+// back of the input queue. If the hook was slow to see Caps Lock, the D typed a
+// moment later is already in that queue, ahead of the Ctrl standing in for Caps
+// Lock, and the application gets a plain D followed by a Ctrl with nothing to
+// modify.
+//
+// Doing the remap here lets the hook notice. It sees every key in the order it
+// was typed, and it knows which of its injections have not come back through it
+// yet. A key that arrives while one is still out overtook it, so the hook stops
+// that key too and injects it again, behind. Order is kept and the D arrives as
+// Ctrl+D.
+//
+// Its own injections are marked (dwExtraInfo) so they can be told from anyone
+// else's. Each is the stand-in for something actually typed, so past this point
+// it counts as typed: the chord sees a remapped or re-sent key exactly as it
+// would a real one.
+
+/// What this program writes in dwExtraInfo on everything it injects. Any value
+/// will do that nothing else is likely to choose; this is "MASH" in ASCII.
+let private marker = 0x4D415348n
+
+/// What the remap remembers from one keystroke to the next.
+type internal Remapping =
+    { /// Each remapped key held down, and the key sent for it. Its release sends
+      /// the release of that key, whatever the configuration says by then, so a
+      /// reload can never leave a Ctrl held down.
+      Held : Map<int, int>
+      /// Injections not yet seen coming back through the hook.
+      Outstanding : int
+      /// When the most recent of them went out, by the time of the key that sent it.
+      SentAt : uint32 }
+
+let internal unremapped = { Held = Map.empty; Outstanding = 0; SentAt = 0u }
+
+/// An injection that has not come back in this long never will: something
+/// further along the chain of hooks swallowed it. Waiting any longer would only
+/// hold up every key typed after it.
+let private lostMs = 1000u
+
+/// What the hook injects in place of the key it was handed.
+[<RequireQualifiedAccess>]
+type internal Send =
+    /// The key a remapped one stands for.
+    | Key of vk: int * up: bool
+    /// The key itself, again, to queue behind what was sent before it.
+    | Again
+
+/// A key going down or up, before the chord looks at it. Some means the key stops
+/// here and that is what goes in its place; None means it carries on as it is.
+let internal remap (table: Map<int, int>) (remapping: Remapping) vk up injected ours (time: uint32) =
+    let send held what =
+        { Held = held; Outstanding = remapping.Outstanding + 1; SentAt = time }, Some what
+
+    if ours then
+        { remapping with Outstanding = max 0 (remapping.Outstanding - 1) }, None
+
+    // Someone else's injection - including another remapper's. Turning those round
+    // too would only fight it.
+    elif injected then
+        remapping, None
+
+    else
+        match remapping.Held.TryFind vk, table.TryFind vk with
+        | Some sent, _ when up -> send (remapping.Held.Remove vk) (Send.Key(sent, true))
+
+        // Auto-repeat, which Ctrl does too.
+        | Some sent, _ -> send remapping.Held (Send.Key(sent, false))
+
+        | None, Some target when not up -> send (remapping.Held.Add(vk, target)) (Send.Key(target, false))
+
+        // Everything else, including the release of a key pressed before the remap
+        // was there to take it. It goes on as it is unless it would overtake.
+        | _ ->
+            if remapping.Outstanding = 0 then
+                remapping, None
+            elif time - remapping.SentAt > lostMs then
+                { remapping with Outstanding = 0 }, None
+            else
+                send remapping.Held Send.Again
+
+let mutable private remapping = unremapped
+
+/// One keystroke, marked as this program's. The scan code goes in as well as the
+/// virtual key, because some applications - terminals among them - read that
+/// instead.
+let private keystroke vk (scan: uint32) extended up =
+    let mutable key = KEYBDINPUT()
+    key.wVk <- uint16 vk
+    key.wScan <- uint16 (scan &&& 0xFFu)
+    key.dwFlags <- (if extended then KEYEVENTF_EXTENDEDKEY else 0u) ||| (if up then KEYEVENTF_KEYUP else 0u)
+    key.dwExtraInfo <- marker
+
+    let mutable input = INPUT()
+    input.``type`` <- INPUT_KEYBOARD
+    input.ki <- key
+    input
+
+let private inject (input: INPUT) =
+    if SendInput(1u, [| input |], Marshal.SizeOf<INPUT>()) = 0u then
+        let code = Marshal.GetLastWin32Error()
+        Task.Run(fun () -> Log.note "keyboard hook" $"SendInput refused a keystroke (error {code}).") |> ignore
+
+/// A key standing in for another. Its scan code comes from the keyboard layout,
+/// with the E0 byte that marks right Ctrl from left in the high half.
+let private sendKey vk up =
+    let scan = MapVirtualKey(uint32 vk, MAPVK_VK_TO_VSC_EX)
+    let extended = (scan >>> 8) = 0xE0u || (scan >>> 8) = 0xE1u
+    inject (keystroke vk scan extended up)
+
+/// Lets go of every remapped key still held, so that leaving does not leave a Ctrl
+/// down behind it.
+let private releaseHeld () =
+    for KeyValue(_, sent) in remapping.Held do
+        sendKey sent true
+
+    remapping <- unremapped
+
+/// Runs on the hook's own thread. Keep it cheap: Windows silently drops a
+/// low-level hook that takes too long to return.
 let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: nativeint) =
     // The return value is the whole protocol: pass the event down the chain of
     // hooks (other programs may have installed their own) or return non-zero to
@@ -208,20 +456,66 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
     // the process, and from the outside that looks like the daemon vanishing.
     try
         let message = int wParam
+        let isDown = message = WM_KEYDOWN || message = WM_SYSKEYDOWN
+        let isUp = message = WM_KEYUP || message = WM_SYSKEYUP
 
-        if nCode <> HC_ACTION || (message <> WM_KEYDOWN && message <> WM_SYSKEYDOWN) then
+        if nCode <> HC_ACTION || not (isDown || isUp) then
             passOn ()
         else
             // lParam is a pointer into unmanaged memory. Marshal.PtrToStructure
             // copies those bytes into a managed struct, laid out per the
             // StructLayout attribute declared on it.
             let key = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam)
+            let vk = int key.vkCode
             let injected = (key.flags &&& LLKHF_INJECTED) <> 0u
+            let ours = injected && key.dwExtraInfo = marker
 
-            let outcome = step Config.current armed (int key.vkCode) injected heldModifiers isPassThroughApp
-            armed <- outcome.Armed
-            outcome.Effects |> List.iter perform
-            if outcome.Swallow then swallow else passOn ()
+            let table =
+                match Config.current with
+                | Some settings -> settings.Remap
+                | None -> Map.empty
+
+            let remapped, sending = remap table remapping vk isUp injected ours key.time
+            remapping <- remapped
+
+            // Past the remap, this program's own injections count as typed.
+            let injected = injected && not ours
+
+            match sending with
+            | Some(Send.Key(target, up)) ->
+                sendKey target up
+                swallow
+
+            | Some Send.Again ->
+                inject (keystroke vk key.scanCode ((key.flags &&& LLKHF_EXTENDED) <> 0u) isUp)
+                swallow
+
+            | None ->
+                if isUp then
+                    swallowedHeld <- released swallowedHeld vk
+                    passOn ()
+
+                // The press already did what it meant; its repeats stop here with it.
+                elif not injected && isRepeat swallowedHeld vk key.time then
+                    swallowedHeld <- Some(vk, key.time)
+                    swallow
+
+                else
+                    let outcome = step Config.current armed vk injected heldModifiers isPassThroughApp
+                    armed <- outcome.Armed
+
+                    swallowedHeld <- pressed swallowedHeld vk key.time injected outcome.Swallow
+
+                    let now = uint32 Environment.TickCount
+                    let watched, notes = watch Config.current watching vk key.time now injected outcome.Swallow heldModifiers
+                    watching <- watched
+
+                    // File I/O has no place inside the hook, so the writing happens elsewhere.
+                    for note in notes do
+                        Task.Run(fun () -> Log.note "keyboard hook" note) |> ignore
+
+                    outcome.Effects |> List.iter perform
+                    if outcome.Swallow then swallow else passOn ()
 
     with error ->
         // Leave the latch clear so a failure cannot stick the chord armed forever.
@@ -229,19 +523,54 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
         armed <- false
         passOn ()
 
-/// Installs the keyboard hook.
+/// The thread the hook is delivered to, once it is running.
+let mutable private hookThread : Thread = null
+let mutable private hookThreadId = 0u
+
+/// Installs the keyboard hook, on a thread of its own.
+///
+/// Its own, rather than the UI thread, because the UI thread is where windows get
+/// focused and moved, and either can block on an application that is slow to
+/// answer. Every keystroke typed meanwhile would wait with it, and a remapped
+/// Caps Lock that waits is a Ctrl that arrives after the key it was meant to
+/// modify. This thread does nothing but run the hook, and asks for the CPU first.
 let install (handlers: Handlers) =
     callback <- LowLevelKeyboardProc(fun nCode wParam lParam -> onKey handlers nCode wParam lParam)
 
-    // The final 0u is the thread id to hook: zero means "all threads", i.e. the
-    // whole desktop. Windows signals failure by returning a null handle, with the
-    // reason in the thread's last-error code - the .NET way to read that is
-    // Marshal.GetLastWin32Error, which works because the declaration above sets
-    // SetLastError = true.
-    hook <- SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0u)
-    if hook = 0n then Error(Marshal.GetLastWin32Error()) else Ok()
+    let installed = TaskCompletionSource<Result<unit, int>>()
+
+    let run () =
+        hookThreadId <- GetCurrentThreadId()
+
+        // The final 0u is the thread id to hook: zero means "all threads", i.e. the
+        // whole desktop. Windows signals failure by returning a null handle, with
+        // the reason in the thread's last-error code - the .NET way to read that is
+        // Marshal.GetLastWin32Error, which works because the declaration above sets
+        // SetLastError = true.
+        hook <- SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0u)
+
+        if hook = 0n then
+            installed.SetResult(Error(Marshal.GetLastWin32Error()))
+        else
+            installed.SetResult(Ok())
+
+            // Keystrokes arrive as messages, so this thread needs a loop to receive
+            // them, the same as the UI thread does. It runs until uninstall posts
+            // WM_QUIT, and the cleanup is done here because a hook belongs to the
+            // thread that installed it.
+            Application.Run()
+            releaseHeld ()
+            UnhookWindowsHookEx(hook) |> ignore
+            hook <- 0n
+
+    // A background thread does not keep the process alive on its own, so an exit
+    // that skips uninstall is not held up by it.
+    hookThread <- Thread(ThreadStart run, IsBackground = true, Priority = ThreadPriority.Highest, Name = "keyboard hook")
+    hookThread.SetApartmentState(ApartmentState.STA)
+    hookThread.Start()
+    installed.Task.Result
 
 let uninstall () =
     if hook <> 0n then
-        UnhookWindowsHookEx(hook) |> ignore
-        hook <- 0n
+        PostThreadMessage(hookThreadId, WM_QUIT, 0n, 0n) |> ignore
+        hookThread.Join(TimeSpan.FromSeconds 1.0) |> ignore

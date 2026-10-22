@@ -255,3 +255,36 @@ let ``a monitor count of zero is refused`` () =
 let ``an unnamed layout is named by its position`` () =
     let json = (withLayout """{ "app": "Spotify", "monitor": 1 }""" "").Replace("\"name\": \"Desk\",", "")
     Assert.Equal("layout 1", (Config.parse json).Layouts.Head.Name)
+
+// Remapping keys
+
+/// The minimal file with a remap section, its entries given as JSON properties.
+let private withRemap (entries: string) =
+    minimal.Replace("\"launcher\": {", "\"remap\": { " + entries + " }, \"launcher\": {")
+
+[<Fact>]
+let ``no remap section remaps nothing`` () =
+    Assert.Empty((Config.parse minimal).Remap)
+
+[<Fact>]
+let ``a swap is two entries, and a bare Ctrl is the left one`` () =
+    let remap = (Config.parse (withRemap "\"CapsLock\": \"Ctrl\", \"Ctrl\": \"CapsLock\"")).Remap
+    Assert.Equal<Map<int, int>>(Map [ int Keys.CapsLock, int Keys.LControlKey; int Keys.LControlKey, int Keys.CapsLock ], remap)
+
+[<Theory>]
+[<InlineData("Caps", "RCtrl", Keys.CapsLock, Keys.RControlKey)>]
+[<InlineData("RAlt", "Esc", Keys.RMenu, Keys.Escape)>]
+[<InlineData("F13", "LWin", Keys.F13, Keys.LWin)>]
+[<InlineData("[", "Shift", Keys.OemOpenBrackets, Keys.LShiftKey)>]
+let ``remapped keys have short names for the modifiers`` (from: string, ``to``: string, fromKey: Keys, toKey: Keys) =
+    let remap = (Config.parse (withRemap $"\"{from}\": \"{``to``}\"")).Remap
+    Assert.Equal<Map<int, int>>(Map [ int fromKey, int toKey ], remap)
+
+[<Theory>]
+[<InlineData("\"CapsLock\": \"Caps\"", "remapped to itself")>]
+[<InlineData("\"Ctrl\": \"Escape\", \"LCtrl\": \"Tab\"", "LControlKey is remapped twice")>]
+[<InlineData("\"CapsLock\": \"Fnord\"", "'Fnord' is not a key")>]
+[<InlineData("\"CapsLock\": \"ControlKey, Shift\"", "is not a single key")>]
+[<InlineData("\"CapsLock\": \"Shift, Control\"", "is not a single key")>]
+let ``a bad remap says what is wrong`` (entries: string, fragment: string) =
+    withRemap entries |> failsWith fragment

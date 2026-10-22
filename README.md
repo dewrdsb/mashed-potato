@@ -19,7 +19,7 @@ executable is installed there to be edited - a deployment default, not a code on
 Editing is **Edit config...** then **Reload config** from the tray; no rebuild and
 no restart.
 
-Two sections, each with its own prefix:
+Two sections, each with its own prefix (and, optionally, [a `remap`](#remapping-keys)):
 
 ```json
 {
@@ -97,6 +97,52 @@ block against the left edge, vertically centred, while `topleft` pins both. Spac
 and hyphens in a side are ignored, so `bottom-left` reads the same as `bottomleft`.
 
 Comments and trailing commas are allowed in the file.
+
+### Remapping keys
+
+An optional `remap` section turns one physical key into another, everywhere:
+
+```json
+"remap": {
+  "CapsLock": "Ctrl",
+  "Ctrl": "CapsLock"
+}
+```
+
+Each property is the key pressed and the key it types instead, so swapping two keys
+takes two entries. Keys are written as anywhere else in the file, plus short names
+for the ones the `Keys` enum names awkwardly: `Ctrl`/`LCtrl`, `RCtrl`, `Shift`/`LShift`,
+`RShift`, `Alt`/`LAlt`, `RAlt`/`AltGr`, `Win`/`LWin`, `RWin`, `Caps`/`CapsLock`, `Esc`.
+A bare `Ctrl` is the left one. Remapped keys are what the chords see: with the swap
+above, `Ctrl+K` is Caps Lock then K.
+
+Turn off any other remapper doing the same job (PowerToys Keyboard Manager) - two
+of them would each turn round the other's keys.
+
+#### Why here and not PowerToys
+
+A low-level hook cannot change a keystroke, only stop it, so every remapper of this
+kind stops Caps Lock and injects a Ctrl in its place with `SendInput`. An injection
+joins the *back* of the input queue. If any hook was slow to see Caps Lock, the `D`
+typed a moment later is already queued ahead of the Ctrl, and the editor gets a
+plain `d` followed by a Ctrl with nothing to modify.
+
+Done here, the hook can see that happen and undo it. It sees keys in the order they
+were typed, and it knows which of its injections have not come back through it yet
+(they carry a marker in `dwExtraInfo`). A key that arrives while one is still out has
+overtaken it, so the hook stops that key as well and injects it again, behind. Order
+is kept and `D` arrives as `Ctrl+D`. An injection that has not come back within a
+second is taken as lost - another hook swallowed it - so keys stop waiting for it.
+
+The hook runs on a thread of its own for the same reason. The UI thread focuses and
+moves windows, and either can block on an application slow to answer; a keyboard
+hook on that thread would hold every keystroke up with it, and a Caps Lock held up
+is a Ctrl that arrives late.
+
+What a hook cannot fix: Windows skips a hook that misses its deadline and, from
+Windows 7 on, quietly removes it. Nothing short of a driver-level remap avoids that
+- the `Scancode Map` registry value does it, but needs an administrator and a
+restart.
 
 ### When the file is wrong
 
@@ -341,7 +387,7 @@ Measured on Firefox 156, twelve tabs open:
 | switching tab | ~420ms |
 
 Which is why none of it runs on the message loop: reading a tab strip is
-cross-process COM, and that thread is where the keyboard hook is delivered. It runs
+cross-process COM, and that thread raises the banner and answers every chord. It runs
 on the thread pool - where Microsoft asks UI Automation clients to call from anyway
 - and only the focusing is posted back.
 
@@ -588,10 +634,9 @@ Two details do the work:
   and train it again; back-to-back calls let it coalesce the pair into no change at
   all. Two seconds is what was measured to work by hand on the dock this is for.
 
-* **It runs off the UI thread.** The handler arrives on the message loop, which is
-  also the thread the keyboard hook is installed on. Sleeping two seconds there would
-  freeze the tray and the banner, and Windows silently drops a low-level hook that
-  does not return promptly. `Display.cycle` starts the work on the thread pool and
+* **It runs off the UI thread.** The handler arrives on the message loop. Sleeping
+  two seconds there would freeze the tray and the banner, and every chord pressed
+  meanwhile. `Display.cycle` starts the work on the thread pool and
   returns at once, behind a latch so a second press cannot interleave its own pair of
   calls and strand the desktop on internal-only - the one state you cannot see well
   enough to fix.
@@ -703,11 +748,11 @@ happens, which is what makes it look intermittent.
   delegate must outlive `SetWindowsHookEx` or the GC collects it while Windows
   still holds the pointer.
 
-* Windows calls a `WH_KEYBOARD_LL` hook on the thread that installed it, so the
-  callback already runs on the UI thread. The hidden `Form` is not there for
-  thread affinity; it is there to defer the work out of the callback, which has
-  to return promptly. Raising and lowering the banner is cheap enough to do
-  inline, which is why it is instant.
+* Windows calls a `WH_KEYBOARD_LL` hook on the thread that installed it, and
+  `Chord.install` installs it on a thread of its own that does nothing else (see
+  [Remapping keys](#remapping-keys)). The hidden `Form` is how its work reaches
+  the UI thread: windows and the banner may only be touched from the thread that
+  created them, and the callback has to return promptly.
 
 * `Chord.install` returns `Result<unit, int>` carrying the Win32 error code.
 
@@ -1004,8 +1049,8 @@ agreeing with what is already there and acts on the next change.
 The work runs on the thread pool, not the message loop - and so does the keystroke
 path, which is the one place this program hands a key's work to a thread rather than
 to the loop. The decision walks the whole device tree, and placing windows can block
-on an unresponsive application; the message loop is also the thread the keyboard
-hook is delivered to, which Windows drops if it stops answering promptly.
+on an unresponsive application, and the message loop is what raises the banner and
+focuses what a chord asks for.
 
 The keystroke needs it for a second reason: **it auto-repeats.** A low-level hook
 sees a held key as a stream of key-downs, indistinguishable from real ones, and four
@@ -1112,7 +1157,9 @@ fallthrough is the ordering doing its job rather than a special case.
 * Keystrokes inside an elevated window are invisible to a non-elevated hook.
   AutoHotkey has the same constraint.
 * Synthetic keystrokes are ignored on purpose (`LLKHF_INJECTED`), so the chord
-  will not fire from remapping software such as PowerToys Keyboard Manager.
+  will not fire from remapping software such as PowerToys Keyboard Manager. Its own
+  are the exception: they stand in for keys typed, so they count as typed. Use the
+  `remap` section rather than another remapper.
 * `ExtractAssociatedIcon` on `Mashed.exe` returns 32x32 whatever the caller asks
   for. It is not used here - the tray reads the embedded copy - but it is the
   obvious thing to reach for, and it quietly ignores the other eight frames.

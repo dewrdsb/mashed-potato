@@ -160,6 +160,10 @@ type Settings =
     { Launcher : Launcher
       Placement : Placement
 
+      /// Physical key to the key it types instead, by virtual key code: Caps Lock to
+      /// left Ctrl, say. Empty unless the file has a remap section.
+      Remap : Map<int, int>
+
       /// Tried in order, first match wins - so the general ones go last. Empty
       /// unless the file has a layouts section.
       Layouts : LayoutProfile list }

@@ -79,11 +79,14 @@ module Dto =
           ``when`` : Conditions
           windows : Slot array }
 
+    /// remap is an object whose property names are the keys pressed, so it is
+    /// read as a dictionary rather than a type.
     [<CLIMutable>]
     type Root =
         { launcher : Launcher
           placement : Placement
-          layouts : Profile array }
+          layouts : Profile array
+          remap : Collections.Generic.Dictionary<string, string> }
 
 let private reading =
     JsonSerializerOptions(
@@ -175,6 +178,59 @@ let private prefix context wantsKey element =
     | false, extra ->
         let listed = String.Join(", ", extra)
         failwith $"{context}: this prefix is held down, so it must be modifiers only - remove {listed}"
+
+/// A key in the remap section. These are mostly modifiers, which the Keys enum
+/// names awkwardly - "LControlKey" - and dangerously: "Control" is the Ctrl *flag*
+/// combined into shortcut values, not a key, and parses without complaint. So the
+/// short names are taken here, a bare "Ctrl" meaning the left one, and anything
+/// that is not a single key code is refused.
+let private remapKey context (text: string) =
+    let named =
+        match (if isNull text then "" else text.Trim().ToLowerInvariant()) with
+        | "ctrl" | "lctrl" | "control" -> Some Keys.LControlKey
+        | "rctrl" -> Some Keys.RControlKey
+        | "shift" | "lshift" -> Some Keys.LShiftKey
+        | "rshift" -> Some Keys.RShiftKey
+        | "alt" | "lalt" -> Some Keys.LMenu
+        | "ralt" | "altgr" -> Some Keys.RMenu
+        | "win" | "lwin" -> Some Keys.LWin
+        | "rwin" -> Some Keys.RWin
+        | "caps" | "capslock" -> Some Keys.CapsLock
+        | "esc" -> Some Keys.Escape
+        | _ -> None
+
+    match named with
+    | Some key -> int key
+    | None ->
+        match keyCode context text with
+        | code when code > 0 && code < 0xFF -> code
+        | _ -> failwith $"{context}: '{text.Trim()}' is not a single key"
+
+/// { "CapsLock": "Ctrl", "Ctrl": "CapsLock" } - each property is a key pressed and
+/// the key it types instead. Swapping two keys is two entries, as there.
+let private remapping (given: Collections.Generic.Dictionary<string, string>) =
+    if isNull given then
+        Map.empty
+    else
+        given
+        |> Seq.map (fun entry ->
+            let context = $"remap '{entry.Key}'"
+            let from = remapKey context entry.Key
+            let ``to`` = remapKey context entry.Value
+
+            if from = ``to`` then
+                failwith $"{context}: a key remapped to itself does nothing - remove the entry"
+
+            from, ``to``)
+        |> Seq.fold
+            (fun (remap: Map<int, int>) (from, ``to``) ->
+                // "Ctrl" and "LCtrl" are two spellings of one key, which a JSON
+                // object will happily hold both of.
+                if remap.ContainsKey from then
+                    failwith $"remap: {enum<Keys> from} is remapped twice"
+
+                remap.Add(from, ``to``))
+            Map.empty
 
 let private anchors context (text: string) =
     let letters =
@@ -476,7 +532,8 @@ let private interpret (root: Dto.Root) =
                   Height = axis "height" zone.height })
             |> List.ofArray }
 
-      Layouts = layouts }
+      Layouts = layouts
+      Remap = remapping root.remap }
 
 /// The text of a configuration file to Settings, or an exception whose message says
 /// what is wrong with it. Kept apart from `load` so it can be exercised without a
