@@ -262,13 +262,19 @@ let ``an unnamed layout is named by its position`` () =
 let private withRemap (entries: string) =
     minimal.Replace("\"launcher\": {", "\"remap\": { " + entries + " }, \"launcher\": {")
 
+/// The keys of a file whose remap is the plain, unconditional shape.
+let private keysOf (json: string) =
+    let profile = List.exactlyOne (Config.parse json).Remap
+    Assert.Equal({ Dock = None; Monitors = None }, profile.When)
+    profile.Keys
+
 [<Fact>]
 let ``no remap section remaps nothing`` () =
     Assert.Empty((Config.parse minimal).Remap)
 
 [<Fact>]
 let ``a swap is two entries, and a bare Ctrl is the left one`` () =
-    let remap = (Config.parse (withRemap "\"CapsLock\": \"Ctrl\", \"Ctrl\": \"CapsLock\"")).Remap
+    let remap = keysOf (withRemap "\"CapsLock\": \"Ctrl\", \"Ctrl\": \"CapsLock\"")
     Assert.Equal<Map<int, int>>(Map [ int Keys.CapsLock, int Keys.LControlKey; int Keys.LControlKey, int Keys.CapsLock ], remap)
 
 [<Theory>]
@@ -277,8 +283,50 @@ let ``a swap is two entries, and a bare Ctrl is the left one`` () =
 [<InlineData("F13", "LWin", Keys.F13, Keys.LWin)>]
 [<InlineData("[", "Shift", Keys.OemOpenBrackets, Keys.LShiftKey)>]
 let ``remapped keys have short names for the modifiers`` (from: string, ``to``: string, fromKey: Keys, toKey: Keys) =
-    let remap = (Config.parse (withRemap $"\"{from}\": \"{``to``}\"")).Remap
+    let remap = keysOf (withRemap $"\"{from}\": \"{``to``}\"")
     Assert.Equal<Map<int, int>>(Map [ int fromKey, int toKey ], remap)
+
+/// The minimal file with a list of remap profiles.
+let private withRemapProfiles (profiles: string) =
+    minimal.Replace("\"launcher\": {", "\"remap\": [ " + profiles + " ], \"launcher\": {")
+
+[<Fact>]
+let ``remap profiles keep their order, conditions and names`` () =
+    let json =
+        withRemapProfiles
+            """{ "name": "Home", "when": { "dock": "WD22TB4" }, "keys": {} },
+               { "when": { "monitors": 1 }, "keys": { "CapsLock": "Esc" } },
+               { "keys": { "CapsLock": "Ctrl" } }"""
+
+    let remap = (Config.parse json).Remap
+    Assert.Equal<string list>([ "Home"; "remap 2"; "remap 3" ], remap |> List.map (fun profile -> profile.Name))
+    Assert.Equal<Conditions list>(
+        [ { Dock = Some "WD22TB4"; Monitors = None }; { Dock = None; Monitors = Some 1 }; { Dock = None; Monitors = None } ],
+        remap |> List.map (fun profile -> profile.When))
+    Assert.Empty(remap.Head.Keys)
+    Assert.Equal<Map<int, int>>(Map [ int Keys.CapsLock, int Keys.LControlKey ], remap.[2].Keys)
+
+[<Fact>]
+let ``a remap profile may leave its keys out`` () =
+    let remap = (Config.parse (withRemapProfiles """{ "when": { "dock": "WD22TB4" } }""")).Remap
+    Assert.Empty((List.exactlyOne remap).Keys)
+
+[<Fact>]
+let ``the shipped remap only swaps Alt and Win back at the home dock`` () =
+    let shipped = Path.Combine(__SOURCE_DIRECTORY__, "..", "mashedpotato.json")
+    let remap = (Config.parse (File.ReadAllText shipped)).Remap
+    Assert.Equal(Some "WD22TB4", remap.Head.When.Dock)
+    Assert.Equal<Map<int, int>>(Map [ int Keys.LMenu, int Keys.LWin; int Keys.LWin, int Keys.LMenu ], remap.Head.Keys)
+    Assert.Equal(int Keys.LControlKey, (List.last remap).Keys.[int Keys.CapsLock])
+
+[<Theory>]
+[<InlineData("\"remap\": \"CapsLock\"", "must be an object of keys, or a list of profiles")>]
+[<InlineData("\"remap\": [ 42 ]", "")>]
+[<InlineData("\"remap\": [ null ]", "each profile is an object")>]
+[<InlineData("\"remap\": [ { \"name\": \"Home\", \"keys\": { \"CapsLock\": \"Caps\" } } ]", "remap 'Home' 'CapsLock': a key remapped to itself")>]
+[<InlineData("\"remap\": [ { \"when\": { \"monitors\": 0 } } ]", "remap 'remap 1': 'monitors' counts attached monitors")>]
+let ``a bad list of remap profiles says what is wrong`` (remap: string, fragment: string) =
+    minimal.Replace("\"launcher\": {", remap + ", \"launcher\": {") |> failsWith fragment
 
 [<Theory>]
 [<InlineData("\"CapsLock\": \"Caps\"", "remapped to itself")>]

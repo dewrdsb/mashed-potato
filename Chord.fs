@@ -397,6 +397,56 @@ let internal remap (table: Map<int, int>) (remapping: Remapping) vk up injected 
 
 let mutable private remapping = unremapped
 
+/// The remap profile that fits, chosen the way a layout is: first match wins.
+let internal chooseRemap (profiles: RemapProfile list) (holding: Conditions -> bool) =
+    profiles |> List.tryFind (fun profile -> holding profile.When)
+
+/// Which remap to put in force, and a line for the log if that is a change from
+/// the profile named `before`. Only a change is worth a line: the hardware
+/// broadcasts that lead here fire for every USB device plugged in.
+let internal rechoose (profiles: RemapProfile list) (holding: Conditions -> bool) (before: string option) =
+    let chosen = chooseRemap profiles holding
+    let keys = chosen |> Option.map (fun profile -> profile.Keys) |> Option.defaultValue Map.empty
+    let name = chosen |> Option.map (fun profile -> profile.Name)
+
+    let note =
+        match chosen with
+        | _ when name = before -> None
+        | Some profile when profile.Keys.IsEmpty -> Some $"'{profile.Name}' is in force, so no keys are remapped."
+        | Some profile -> Some $"'{profile.Name}' is in force, remapping {profile.Keys.Count} keys."
+        | None when List.isEmpty profiles -> None
+        | None -> Some "No remap profile fits what is plugged in, so no keys are remapped."
+
+    keys, name, note
+
+/// The keys remapped right now. The hook only reads this; `rekey` decides it.
+let mutable private keysInForce : Map<int, int> = Map.empty
+let mutable private profileInForce : string option = None
+
+/// Puts in force the remap profile that fits what is plugged in. Choosing can walk
+/// the whole device tree, which has no place inside the hook - so this runs on the
+/// thread pool when the configuration is read and when the hardware changes, and
+/// the hook picks up the result on its next key. A reference assignment is atomic,
+/// so the worst a keystroke sees is the remap from a moment ago, and a key held
+/// across the change is still released as the key it was sent as.
+let rekey () =
+    try
+        let profiles =
+            match Config.current with
+            | Some settings -> settings.Remap
+            | None -> []
+
+        // Without profiles there is nothing to ask, and no reason to look at the
+        // hardware to find that out.
+        let holding = if List.isEmpty profiles then (fun _ -> false) else Layout.conditionsNow ()
+        let keys, name, note = rechoose profiles holding profileInForce
+
+        keysInForce <- keys
+        profileInForce <- name
+        note |> Option.iter (Log.note "remap")
+    with error ->
+        Log.write "remap" error
+
 /// One keystroke, marked as this program's. The scan code goes in as well as the
 /// virtual key, because some applications - terminals among them - read that
 /// instead.
@@ -470,12 +520,7 @@ let private onKey (handlers: Handlers) nCode (wParam: nativeint) (lParam: native
             let injected = (key.flags &&& LLKHF_INJECTED) <> 0u
             let ours = injected && key.dwExtraInfo = marker
 
-            let table =
-                match Config.current with
-                | Some settings -> settings.Remap
-                | None -> Map.empty
-
-            let remapped, sending = remap table remapping vk isUp injected ours key.time
+            let remapped, sending = remap keysInForce remapping vk isUp injected ours key.time
             remapping <- remapped
 
             // Past the remap, this program's own injections count as typed.

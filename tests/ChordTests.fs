@@ -40,7 +40,7 @@ let private settings =
               ApplyLayoutVk = Some(int Keys.D0)
               ApplyLayoutOnChange = None }
           Layouts = []
-          Remap = Map.empty }
+          Remap = [] }
 
 let private outsidePassThrough (_: string array) = false
 
@@ -366,3 +366,53 @@ let ``more coming back than went out is not counted below zero`` () =
 let ``an INPUT is the size SendInput expects`` () =
     let expected = if System.IntPtr.Size = 8 then 40 else 28
     Assert.Equal(expected, System.Runtime.InteropServices.Marshal.SizeOf<Interop.INPUT>())
+
+// Choosing a remap
+
+let private remapAt name dock keys =
+    { Name = name; When = { Dock = dock; Monitors = None }; Keys = keys }
+
+let private home = remapAt "Home" (Some "WD22TB4") Map.empty
+let private everywhere = remapAt "Everywhere" None capsToCtrl
+
+let private docked (dock: string option) (conditions: Conditions) =
+    conditions.Dock.IsNone || conditions.Dock = dock
+
+[<Fact>]
+let ``the first remap profile that fits is chosen`` () =
+    Assert.Equal(Some home, chooseRemap [ home; everywhere ] (docked (Some "WD22TB4")))
+
+[<Fact>]
+let ``away from the desk a profile names, the next one fits`` () =
+    Assert.Equal(Some everywhere, chooseRemap [ home; everywhere ] (docked (Some "WD25")))
+
+[<Fact>]
+let ``with no profile that fits, nothing is remapped`` () =
+    Assert.Equal(None, chooseRemap [ home ] (docked None))
+
+[<Fact>]
+let ``arriving at a desk puts its remap in force and says so`` () =
+    let keys, name, note = rechoose [ home; everywhere ] (docked (Some "WD22TB4")) (Some "Everywhere")
+    Assert.Empty(keys)
+    Assert.Equal(Some "Home", name)
+    Assert.Contains("no keys are remapped", note.Value)
+
+[<Fact>]
+let ``leaving it puts the next remap in force`` () =
+    let keys, name, note = rechoose [ home; everywhere ] (docked None) (Some "Home")
+    Assert.Equal<Map<int, int>>(capsToCtrl, keys)
+    Assert.Equal(Some "Everywhere", name)
+    Assert.Contains("remapping 1 keys", note.Value)
+
+[<Fact>]
+let ``the remap already in force is not announced again`` () =
+    let _, _, note = rechoose [ home; everywhere ] (docked None) (Some "Everywhere")
+    Assert.Equal(None, note)
+
+[<Fact>]
+let ``no profile fitting is announced, and remaps nothing`` () =
+    Assert.Equal((Map.empty, None, Some "No remap profile fits what is plugged in, so no keys are remapped."), rechoose [ home ] (docked None) (Some "Home"))
+
+[<Fact>]
+let ``no remap section at all is not announced`` () =
+    Assert.Equal((Map.empty, None, None), rechoose [] unaskable (Some "Home"))

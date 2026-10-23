@@ -79,14 +79,22 @@ module Dto =
           ``when`` : Conditions
           windows : Slot array }
 
-    /// remap is an object whose property names are the keys pressed, so it is
-    /// read as a dictionary rather than a type.
+    /// keys is an object whose property names are the keys pressed, so it is read
+    /// as a dictionary rather than a type.
+    [<CLIMutable>]
+    type RemapProfile =
+        { name : string
+          ``when`` : Conditions
+          keys : Collections.Generic.Dictionary<string, string> }
+
+    /// remap is a JsonElement for the same reason prefix is: it is legally either
+    /// one set of keys, or a list of profiles each with a set of keys.
     [<CLIMutable>]
     type Root =
         { launcher : Launcher
           placement : Placement
           layouts : Profile array
-          remap : Collections.Generic.Dictionary<string, string> }
+          remap : JsonElement }
 
 let private reading =
     JsonSerializerOptions(
@@ -208,13 +216,13 @@ let private remapKey context (text: string) =
 
 /// { "CapsLock": "Ctrl", "Ctrl": "CapsLock" } - each property is a key pressed and
 /// the key it types instead. Swapping two keys is two entries, as there.
-let private remapping (given: Collections.Generic.Dictionary<string, string>) =
+let private remapKeys where (given: Collections.Generic.Dictionary<string, string>) =
     if isNull given then
         Map.empty
     else
         given
         |> Seq.map (fun entry ->
-            let context = $"remap '{entry.Key}'"
+            let context = $"{where} '{entry.Key}'"
             let from = remapKey context entry.Key
             let ``to`` = remapKey context entry.Value
 
@@ -227,10 +235,63 @@ let private remapping (given: Collections.Generic.Dictionary<string, string>) =
                 // "Ctrl" and "LCtrl" are two spellings of one key, which a JSON
                 // object will happily hold both of.
                 if remap.ContainsKey from then
-                    failwith $"remap: {enum<Keys> from} is remapped twice"
+                    failwith $"{where}: {enum<Keys> from} is remapped twice"
 
                 remap.Add(from, ``to``))
             Map.empty
+
+/// A `when`, as a layout or a remap profile gives one. Omitted holds always.
+let private conditionsOf where (given: Dto.Conditions) =
+    if obj.ReferenceEquals(given, null) then
+        { Dock = None; Monitors = None }
+    else
+        { Dock =
+            match given.dock with
+            | null -> None
+            | text when String.IsNullOrWhiteSpace text -> None
+            | text -> Some(text.Trim())
+
+          Monitors =
+            if given.monitors.HasValue then
+                if given.monitors.Value < 1 then
+                    failwith $"{where}: 'monitors' counts attached monitors, so it starts at 1"
+                Some given.monitors.Value
+            else
+                None }
+
+/// Two shapes. The plain one is a set of keys, remapped everywhere:
+///
+///   "remap": { "CapsLock": "Ctrl", "Ctrl": "CapsLock" }
+///
+/// The other is a list of profiles, chosen by what is plugged in the way layouts
+/// are, for a keyboard that does its own remapping at one desk and not at another:
+///
+///   "remap": [ { "when": { "dock": "WD22TB4" }, "keys": {} },
+///              { "keys": { "CapsLock": "Ctrl", "Ctrl": "CapsLock" } } ]
+let private remapping (element: JsonElement) =
+    match element.ValueKind with
+    | JsonValueKind.Undefined | JsonValueKind.Null -> []
+
+    | JsonValueKind.Object ->
+        let keys = element.Deserialize<Collections.Generic.Dictionary<string, string>>(reading)
+        [ { Name = "remap"; When = { Dock = None; Monitors = None }; Keys = remapKeys "remap" keys } ]
+
+    | JsonValueKind.Array ->
+        element.Deserialize<Dto.RemapProfile array>(reading)
+        |> Array.mapi (fun index profile ->
+            if obj.ReferenceEquals(profile, null) then
+                failwith $"remap {index + 1}: each profile is an object, as in {{ \"when\": {{ \"dock\": \"WD25\" }}, \"keys\": {{ \"CapsLock\": \"Ctrl\" }} }}"
+
+            let name = if String.IsNullOrWhiteSpace profile.name then $"remap {index + 1}" else profile.name.Trim()
+            let where = $"remap '{name}'"
+
+            // No keys at all is allowed, and is the point of a profile: at that desk,
+            // remap nothing.
+            { Name = name; When = conditionsOf where profile.``when``; Keys = remapKeys where profile.keys })
+        |> List.ofArray
+
+    | other ->
+        failwith $"remap: must be an object of keys, or a list of profiles each with keys - not {other}"
 
 let private anchors context (text: string) =
     let letters =
@@ -431,23 +492,7 @@ let private interpret (root: Dto.Root) =
             let name = if String.IsNullOrWhiteSpace profile.name then $"layout {index + 1}" else profile.name.Trim()
             let where = $"layout '{name}'"
 
-            let conditions =
-                if obj.ReferenceEquals(profile.``when``, null) then
-                    { Dock = None; Monitors = None }
-                else
-                    { Dock =
-                        match profile.``when``.dock with
-                        | null -> None
-                        | text when String.IsNullOrWhiteSpace text -> None
-                        | text -> Some(text.Trim())
-
-                      Monitors =
-                        if profile.``when``.monitors.HasValue then
-                            if profile.``when``.monitors.Value < 1 then
-                                failwith $"{where}: 'monitors' counts attached monitors, so it starts at 1"
-                            Some profile.``when``.monitors.Value
-                        else
-                            None }
+            let conditions = conditionsOf where profile.``when``
 
             let slots =
                 orEmpty profile.windows

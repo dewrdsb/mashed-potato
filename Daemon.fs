@@ -123,7 +123,7 @@ let private buildTrayMenu (onReload: unit -> unit) situation =
         // nowhere else to see the names Windows uses for them.
         match settings.Placement.ApplyLayoutVk, situation with
         | None, _ | _, None -> ()
-        | Some vk, Some(monitors, docks, profile) ->
+        | Some vk, Some(monitors, docks, (profile: LayoutProfile option)) ->
             let now = match profile with Some p -> p.Name | None -> "nothing matches"
 
             caption $"{prefixText settings.Placement.Prefix}+{keyName vk}   →   Layout: {now}"
@@ -187,6 +187,15 @@ let run () =
     // seconds - collapses into one pass, after the last of them.
     use settling = new Timer()
 
+    // The same for the remap, which has nothing to wait for but the dock: a
+    // keyboard on it is typed on long before its monitors come up, so this goes
+    // after a second rather than after the layout's settling time.
+    use rekeying = new Timer(Interval = 1000)
+
+    rekeying.Tick.Add(fun _ ->
+        rekeying.Stop()
+        Task.Run(Chord.rekey) |> ignore)
+
     // The keyboard hook runs on a thread of its own (see Chord.install), and this
     // hidden window is how its work reaches this one: windows and the banner may
     // only be touched from the thread that created them, and the callback has to
@@ -194,10 +203,15 @@ let run () =
     use pump =
         new Pump(fun () ->
             match Config.current with
-            | Some settings when settings.Placement.ApplyLayoutOnChange.IsSome ->
-                settling.Stop()
-                settling.Start()
-            | _ -> ())
+            | Some settings ->
+                if settings.Placement.ApplyLayoutOnChange.IsSome then
+                    settling.Stop()
+                    settling.Start()
+
+                if settings.Remap |> List.exists (fun profile -> profile.When <> { Dock = None; Monitors = None }) then
+                    rekeying.Stop()
+                    rekeying.Start()
+            | None -> ())
 
     // Touching .Handle forces WinForms to create the underlying HWND now. Until
     // something asks, it defers creation - and a window with no handle cannot be
@@ -284,6 +298,10 @@ let run () =
 
                     Some survey
                 | _ -> None
+
+            // Off the loop, since a profile naming a dock walks the device tree. Until
+            // it finishes, the remap from before the reload stays in force.
+            Task.Run(Chord.rekey) |> ignore
 
             let previous = tray.ContextMenuStrip
             tray.ContextMenuStrip <- buildTrayMenu reload situation

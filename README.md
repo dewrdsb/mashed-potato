@@ -119,6 +119,28 @@ above, `Ctrl+K` is Caps Lock then K.
 Turn off any other remapper doing the same job (PowerToys Keyboard Manager) - two
 of them would each turn round the other's keys.
 
+#### Only at some desks
+
+A keyboard that swaps the keys in its own hardware must not have them swapped back.
+For that, `remap` is a list of profiles instead, chosen the way [layouts](#layouts)
+are - each with an optional `when`, first match wins:
+
+```json
+"remap": [
+  { "name": "Home", "when": { "dock": "WD22TB4" }, "keys": {} },
+  { "name": "Everywhere else", "keys": { "CapsLock": "Ctrl", "Ctrl": "CapsLock" } }
+]
+```
+
+A profile with no `keys` (or leaving them out) remaps nothing; if no profile matches,
+nothing is remapped either. The choice is made when the config is read and again a
+second after the hardware stops changing - quicker than a layout's settling time,
+since a keyboard on a dock is typed on long before its monitors are up. The log
+records each change of profile.
+
+The choice is by desk, not by keyboard: at the home dock the laptop's own keyboard
+goes unremapped too. A low-level hook is not told which keyboard a key came from.
+
 #### Why here and not PowerToys
 
 A low-level hook cannot change a keystroke, only stop it, so every remapper of this

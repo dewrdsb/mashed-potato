@@ -1,8 +1,15 @@
 {
-  "remap": {
-    "CapsLock": "Ctrl",
-    "Ctrl": "CapsLock"
-  },
+  "remap": [
+    {
+      "name": "Home (keyboard swaps Caps Lock and Ctrl itself, and Alt and Win)",
+      "when": { "dock": "WD22TB4" },
+      "keys": { "Alt": "Win", "Win": "Alt" }
+    },
+    {
+      "name": "Caps Lock and Ctrl swapped",
+      "keys": { "CapsLock": "Ctrl", "Ctrl": "CapsLock" }
+    }
+  ],
   "launcher": {
     "prefix": "Ctrl+K",
     "passThroughIn": [],

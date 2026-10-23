@@ -98,20 +98,27 @@ let private look () =
 let internal reachable (screens: Monitor array) (profile: LayoutProfile) =
     profile.Slots |> List.forall (fun slot -> (resolve slot.Monitor screens).IsSome)
 
-let internal matching (profiles: LayoutProfile list) (screens: Monitor array) (devices: Lazy<string list>) =
-    let docked wanted = devices.Value |> List.exists (contains wanted)
+/// Whether a `when` holds for what is plugged in. The monitor count is tested first:
+/// the dock is a walk of the whole device tree, and the `lazy` around it means an
+/// early `false` avoids paying for it at all.
+let internal holds (conditions: Conditions) (screens: Monitor array) (devices: Lazy<string list>) =
+    (match conditions.Monitors with
+     | Some count -> count = screens.Length
+     | None -> true)
+    && (match conditions.Dock with
+        | Some wanted -> devices.Value |> List.exists (contains wanted)
+        | None -> true)
 
+let internal matching (profiles: LayoutProfile list) (screens: Monitor array) (devices: Lazy<string list>) =
     profiles
-    |> List.tryFind (fun profile ->
-        // Cheap tests first: the dock is a walk of the whole device tree, and the
-        // `lazy` around it means an early `false` here avoids paying for it at all.
-        (match profile.When.Monitors with
-         | Some count -> count = screens.Length
-         | None -> true)
-        && reachable screens profile
-        && (match profile.When.Dock with
-            | Some wanted -> docked wanted
-            | None -> true))
+    |> List.tryFind (fun profile -> reachable screens profile && holds profile.When screens devices)
+
+/// A test of `when` conditions against what is plugged in right now - looked at
+/// once, however many conditions are then asked about. For the remap, which is
+/// chosen the way a layout is but has no windows to place.
+let conditionsNow () =
+    let screens, devices = look ()
+    fun conditions -> holds conditions screens devices
 
 /// What the tray menu shows and the log records: the monitors, any docks that are
 /// present, and which profile that adds up to. Deliberately the same matching
