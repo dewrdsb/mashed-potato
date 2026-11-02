@@ -123,6 +123,28 @@ type POINT =
     val x : int
     val y : int
 
+    new(x, y) = { x = x; y = y }
+
+[<Struct; StructLayout(LayoutKind.Sequential)>]
+type SIZE =
+    val cx : int
+    val cy : int
+
+    new(cx, cy) = { cx = cx; cy = cy }
+
+/// How UpdateLayeredWindow blends a window's pixels over what is behind it. Four
+/// bytes, laid out exactly as Windows expects them.
+[<Struct; StructLayout(LayoutKind.Sequential)>]
+type BLENDFUNCTION =
+    val BlendOp : byte
+    val BlendFlags : byte
+    /// Opacity applied on top of the per-pixel alpha; 255 leaves it alone.
+    val SourceConstantAlpha : byte
+    val AlphaFormat : byte
+
+    new(op, flags, constant, format) =
+        { BlendOp = op; BlendFlags = flags; SourceConstantAlpha = constant; AlphaFormat = format }
+
 /// What ShowWindow state a window is in, plus - the reason this is here at all -
 /// where it will come back to when it is restored. A minimized window's rect is
 /// (-32000, -32000): Windows parks it off-screen, and rcNormalPosition is the only
@@ -225,6 +247,20 @@ let SW_RESTORE = 9
 let WS_EX_TOOLWINDOW = 0x00000080
 [<Literal>]
 let WS_EX_NOACTIVATE = 0x08000000
+
+/// A layered window is composited by DWM from a bitmap the program supplies, alpha
+/// channel and all, rather than painted through WM_PAINT. It is the only way a
+/// top-level window gets antialiased edges against the desktop behind it.
+[<Literal>]
+let WS_EX_LAYERED = 0x00080000
+
+// UpdateLayeredWindow's blending: source-over, with the bitmap's own per-pixel alpha.
+[<Literal>]
+let ULW_ALPHA = 0x00000002u
+[<Literal>]
+let AC_SRC_OVER = 0x00uy
+[<Literal>]
+let AC_SRC_ALPHA = 0x01uy
 
 // SetWindowPos does several jobs at once; the flags say which parts to skip.
 [<Literal>]
@@ -360,24 +396,45 @@ extern bool SetWindowPos(nativeint hwnd, nativeint insertAfter, int x, int y, in
 [<DllImport("user32.dll")>]
 extern bool BringWindowToTop(nativeint hwnd)
 
-/// A rounded-rectangle region. The last two arguments are the *diameters* of the
-/// ellipse used for the corners, not the radii. gdi32 is the old drawing API, below
-/// GDI+ and WinForms; regions are one of the few parts of it still worth reaching for.
+// gdi32 is the old drawing API, below GDI+ and WinForms. A *device context* (DC) is
+// its drawing surface; a bitmap is drawn from by being selected into one. Every
+// handle here is a GDI object that has to be handed back, or the process leaks them.
+
+/// A window's DC; null asks for the whole screen's. Returned with ReleaseDC.
+[<DllImport("user32.dll")>]
+extern nativeint GetDC(nativeint hwnd)
+[<DllImport("user32.dll")>]
+extern int ReleaseDC(nativeint hwnd, nativeint dc)
+
+/// An off-screen DC to select a bitmap into. Freed with DeleteDC, not ReleaseDC.
 [<DllImport("gdi32.dll")>]
-extern nativeint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse)
+extern nativeint CreateCompatibleDC(nativeint dc)
+[<DllImport("gdi32.dll")>]
+extern bool DeleteDC(nativeint dc)
+
+/// Puts an object into a DC and returns the one it displaced, which has to be put
+/// back before the DC is deleted.
+[<DllImport("gdi32.dll")>]
+extern nativeint SelectObject(nativeint dc, nativeint object)
 
 [<DllImport("gdi32.dll")>]
 extern bool DeleteObject(nativeint handle)
 
-/// Restricts a window to a region: anything outside it is not drawn and not clicked,
-/// child controls included. Non-zero is success.
-///
-/// The ownership rule is unusual and worth stating. On success the *system* takes
-/// the region handle - it must not be deleted, reused, or passed to SetWindowRgn
-/// again, and the previously set region is freed by Windows. On failure it is still
-/// ours, and leaking it leaks a GDI object.
-[<DllImport("user32.dll")>]
-extern int SetWindowRgn(nativeint hwnd, nativeint region, bool redraw)
+/// Gives a WS_EX_LAYERED window its picture, position and size in one call. The
+/// bitmap selected into `source` must be 32-bit with *premultiplied* alpha - each
+/// colour channel already scaled by its alpha - which is what GDI+'s
+/// Bitmap.GetHbitmap produces.
+[<DllImport("user32.dll", SetLastError = true)>]
+extern bool UpdateLayeredWindow(
+    nativeint hwnd,
+    nativeint screen,
+    POINT& position,
+    SIZE& size,
+    nativeint source,
+    POINT& sourceOrigin,
+    uint32 colourKey,
+    BLENDFUNCTION& blend,
+    uint32 flags)
 
 /// Changes which monitors make up the desktop. Unlike most of user32 it returns a
 /// Win32 error code directly rather than a bool - zero is success. With null path

@@ -8,27 +8,25 @@
 
 module internal MashedPotato.Overlay
 
-open System
+open System.ComponentModel
 open System.Drawing
+open System.Drawing.Drawing2D
+open System.Drawing.Imaging
+open System.Drawing.Text
 open System.Windows.Forms
 
 open Interop
 
-// A WinForms crash course, since this module is most of it:
+// The banner is a *layered* window: rather than painting itself through WM_PAINT
+// like an ordinary WinForms form, it hands Windows a finished 32-bit bitmap -
+// alpha channel included - and DWM composites that over the desktop. That is what
+// makes the rounded corners smooth. A window region, the usual way to round a
+// window, can only include or exclude whole pixels, so its arcs come out stepped.
 //
-//   Control  anything that occupies a rectangle - the base of the whole library.
-//   Form     a top-level window (one HWND, owned by the thread that made it).
-//   Label    a control that draws text.
-//   Dock     layout: DockStyle.Fill makes a child fill its parent, so the caption
-//            covers the banner without any coordinate arithmetic.
-//   Padding  space reserved inside a container's edges. The parent's background
-//            shows through it, which is how the orange border here is drawn -
-//            no custom painting at all.
-//
-// Controls are painted on demand: Windows sends WM_PAINT, WinForms turns that into
-// an OnPaint call. Painting uses GDI+ resources - fonts, brushes, pens - which are
-// OS objects wrapped in IDisposable, and are the usual source of the kind of bug
-// documented on applyFont below.
+// The whole picture - orange body, cyan face, text - is drawn with GDI+ into that
+// bitmap, antialiased throughout, so there are no child controls at all. GDI+
+// resources - fonts, brushes, paths, bitmaps - are OS objects wrapped in
+// IDisposable, hence all the `use`.
 
 [<Literal>]
 let private Message = "App Switcher"
@@ -51,7 +49,8 @@ let private InnerCornerRadius = CornerRadius - BorderWidth
 /// Borderless, topmost, and never activated. WS_EX_NOACTIVATE earns its keep: if
 /// this window took the foreground, App.activate's foreground test would see
 /// Mashed Potato instead of the app being toggled and the minimize branch would never
-/// fire. WS_EX_TOOLWINDOW keeps it out of Alt+Tab.
+/// fire. WS_EX_TOOLWINDOW keeps it out of Alt+Tab, and WS_EX_LAYERED is what lets
+/// it take a bitmap with an alpha channel - see present.
 type private Banner() =
     inherit Form()
 
@@ -69,17 +68,14 @@ type private Banner() =
     /// set extended window styles that have no WinForms property.
     override this.CreateParams =
         let parameters = base.CreateParams
-        parameters.ExStyle <- parameters.ExStyle ||| WS_EX_NOACTIVATE ||| WS_EX_TOOLWINDOW
+        parameters.ExStyle <- parameters.ExStyle ||| WS_EX_NOACTIVATE ||| WS_EX_TOOLWINDOW ||| WS_EX_LAYERED
         parameters
 
 let mutable private banner : Form = null
-let mutable private caption : Label = null
-let mutable private fittedFor = Size.Empty
-let mutable private roundedFor = Size.Empty
 
-/// The area inside the border - what the caption actually gets to use.
-let private inner (box: Size) =
-    Size(box.Width - 2 * BorderWidth, box.Height - 2 * BorderWidth)
+/// The last picture drawn, and the size it was drawn for. Re-drawn only when the
+/// size changes: the banner moves between monitors far more often than it resizes.
+let mutable private picture : Bitmap = null
 
 /// The largest Segoe UI that still leaves some air around the text. Sized in
 /// pixels rather than points so it comes out the same at any display scaling.
@@ -102,55 +98,97 @@ let private fitted (box: Size) =
 
     shrink (float32 box.Height * 0.6f)
 
-/// Fonts handed to the caption are never disposed, and are refitted only when the
-/// size actually changes. Control.Font compares by value and ignores an assignment
-/// that Equals the font already set, so a same-size refit leaves the label holding
-/// the object we were about to release - and painting with a released font is a
-/// GDI+ "Parameter is not valid" inside Label.OnPaint, which takes the process
-/// down. Two monitors of equal size reach this: the banner moves between them, so
-/// its origin changes while its size does not.
-let private applyFont (box: Size) =
-    if box <> fittedFor then
-        caption.Font <- fitted box
-        fittedFor <- box
+/// A rectangle with all four corners rounded to the same radius, as a path GDI+
+/// can fill with antialiased edges. Each AddArc is one quarter of a circle of
+/// diameter 2 * radius, sitting in its corner; the path joins them with the
+/// straight sides.
+let private rounded (area: RectangleF) (radius: float32) =
+    let path = new GraphicsPath()
+    let diameter = radius * 2f
+    path.AddArc(area.Left, area.Top, diameter, diameter, 180f, 90f)
+    path.AddArc(area.Right - diameter, area.Top, diameter, diameter, 270f, 90f)
+    path.AddArc(area.Right - diameter, area.Bottom - diameter, diameter, diameter, 0f, 90f)
+    path.AddArc(area.Left, area.Bottom - diameter, diameter, diameter, 90f, 90f)
+    path.CloseFigure()
+    path
 
-/// Restricts one window to a rounded rectangle of its own size. Returns whether it
-/// took, so a refusal can be retried rather than latched.
-///
-/// A region applies to a child control exactly as it does to a top-level window,
-/// which is what rounds the inside: clipping the caption's corners lets the form
-/// behind it - the orange - show through them.
-let private round (hwnd: nativeint) (box: Size) radius =
-    if radius <= 0 || box.Width <= 0 || box.Height <= 0 then
-        false
-    else
-        // CreateRoundRectRgn's lower-right corner is exclusive, hence the + 1, and
-        // its last two arguments are diameters where radius is a radius.
-        match CreateRoundRectRgn(0, 0, box.Width + 1, box.Height + 1, radius * 2, radius * 2) with
-        | 0n -> false
-        | region ->
-            if SetWindowRgn(hwnd, region, true) <> 0 then
-                true
-            else
-                // Refused, so the handle is still ours and would otherwise leak a
-                // GDI object on every attempt.
-                DeleteObject region |> ignore
-                false
+/// Draws the whole banner at the given size. Everything outside the orange is left
+/// fully transparent, and the antialiased edge pixels partly so, which is what
+/// lets the corners fade into whatever is behind them.
+let private draw (box: Size) =
+    let image = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppPArgb)
+    use graphics = Graphics.FromImage(image)
+    graphics.Clear(Color.Transparent)
+    graphics.SmoothingMode <- SmoothingMode.AntiAlias
+    // GDI+ otherwise treats a pixel's centre as its corner, which leaves a fill
+    // from 0 to Width only half-covering the pixels along its straight edges - a
+    // faint translucent line all the way round.
+    graphics.PixelOffsetMode <- PixelOffsetMode.HighQuality
+    // Unhinted antialiasing for the text. GDI, which is what a Label draws with,
+    // does not smooth text this large at all; hinting is for small text and only
+    // distorts glyphs at display sizes.
+    graphics.TextRenderingHint <- TextRenderingHint.AntiAlias
 
-/// Rounds the banner and the cyan area inside it. Re-made only when the size changes,
-/// like the font: a region is a GDI object, and the banner moves between monitors far
-/// more often than it resizes.
+    let outside = RectangleF(0f, 0f, float32 box.Width, float32 box.Height)
+    let inside = RectangleF.Inflate(outside, float32 -BorderWidth, float32 -BorderWidth)
+
+    use orange = new SolidBrush(Color.Orange)
+    use body = rounded outside (float32 CornerRadius)
+    graphics.FillPath(orange, body)
+
+    use cyan = new SolidBrush(Color.Cyan)
+    use face = rounded inside (float32 InnerCornerRadius)
+    graphics.FillPath(cyan, face)
+
+    use font = fitted (Size.Truncate inside.Size)
+    use black = new SolidBrush(Color.Black)
+    // NoWrap: GDI+ measures a little wider than the GDI fit in `fitted` does, and
+    // should never break "App Switcher" over two lines because of it.
+    use format =
+        new StringFormat(
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoWrap)
+    graphics.DrawString(Message, font, black, inside, format)
+    image
+
+/// Puts the banner's picture on screen at `bounds`, drawing a new one first if the
+/// size has changed.
 ///
-/// There is no antialiasing here - a window region clips whole pixels, so the arcs
-/// are stepped rather than smooth. Genuinely smooth corners would mean a layered
-/// window drawn with per-pixel alpha, which is a different module.
-let private applyCorners (box: Size) =
-    if box <> roundedFor then
-        // Latched only when both took: a rounded outside around a square inside
-        // reads as a bug rather than as a style.
-        let outside = round banner.Handle box CornerRadius
-        let inside = round caption.Handle (inner box) InnerCornerRadius
-        if outside && inside then roundedFor <- box
+/// UpdateLayeredWindow is called on every show rather than only after a redraw:
+/// it sets position and size along with the picture, so the window can never be
+/// left one size with a bitmap of another - which a DPI change on the way to a
+/// different monitor could otherwise do behind our back.
+let private present (bounds: Rectangle) =
+    if isNull picture || picture.Size <> bounds.Size then
+        let fresh = draw bounds.Size
+        if not (isNull picture) then picture.Dispose()
+        picture <- fresh
+
+    let screen = GetDC 0n
+    let memory = CreateCompatibleDC screen
+    // A GDI copy of the picture. GetHbitmap premultiplies the alpha, which is the
+    // form UpdateLayeredWindow requires; the argument is only the colour used for
+    // fully transparent pixels.
+    let hbitmap = picture.GetHbitmap(Color.FromArgb 0)
+    let previous = SelectObject(memory, hbitmap)
+
+    try
+        let mutable position = POINT(bounds.X, bounds.Y)
+        let mutable size = SIZE(bounds.Width, bounds.Height)
+        let mutable origin = POINT(0, 0)
+        let mutable blend = BLENDFUNCTION(AC_SRC_OVER, 0uy, 255uy, AC_SRC_ALPHA)
+
+        if not (UpdateLayeredWindow(banner.Handle, screen, &position, &size, memory, &origin, 0u, &blend, ULW_ALPHA)) then
+            // Picks up the error code SetLastError saved; setVisible logs it.
+            raise (Win32Exception())
+    finally
+        // Undone in reverse: the displaced bitmap back into the DC, then each
+        // handle returned the way it was obtained.
+        SelectObject(memory, previous) |> ignore
+        DeleteObject hbitmap |> ignore
+        DeleteDC memory |> ignore
+        ReleaseDC(0n, screen) |> ignore
 
 /// Across the bottom of whichever screen holds the foreground window: three
 /// quarters of the width, centred, one fifth of the height. WorkingArea rather
@@ -164,32 +202,18 @@ let private placement () =
 /// Built once at startup. Creating a window inside the hook callback would be slow,
 /// and a low-level hook has to return promptly or Windows stops calling it.
 let create () =
-    caption <-
-        new Label(
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter,
-            BackColor = Color.Cyan,
-            ForeColor = Color.Black,
-            Text = Message)
-
     banner <-
         new Banner(
             FormBorderStyle = FormBorderStyle.None,
             StartPosition = FormStartPosition.Manual,
             ShowInTaskbar = false,
             TopMost = true,
-            // The form only shows through as the border: the caption is docked
-            // over everything inside the padding.
-            BackColor = Color.Orange,
-            Padding = Padding(BorderWidth),
             Bounds = placement ())
 
-    banner.Controls.Add(caption)
-    applyFont (inner banner.Bounds.Size)
-
-    // The region needs a real HWND, so it has to follow the handle, not precede it.
+    // A layered window shows nothing at all until it has been given a picture, and
+    // giving it one needs a real HWND - so the handle first, then the picture.
     banner.Handle |> ignore
-    applyCorners banner.Bounds.Size
+    present banner.Bounds
     banner
 
 /// Setting Visible is enough to keep this from stealing focus: Form.SetVisibleCore
@@ -202,11 +226,12 @@ let setVisible visible =
         // The screen holding the foreground window can differ from chord to chord.
         let bounds = placement ()
 
+        // Kept in step with what present does, so WinForms' own idea of where the
+        // window is never disagrees with where it actually is.
         if banner.Bounds <> bounds then
             banner.Bounds <- bounds
 
-        applyFont (inner bounds.Size)
-        applyCorners bounds.Size
+        present bounds
         banner.Visible <- true
     else
         banner.Visible <- false

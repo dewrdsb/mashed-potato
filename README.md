@@ -671,45 +671,49 @@ bottom edge. `WorkingArea` rather than `Bounds`, so it lands above the taskbar
 instead of underneath it. Cyan, black caption, 20px orange border - it is
 supposed to be hard to miss.
 
-The border is `Padding` on the form rather than any custom painting: the form's
-`BackColor` is the orange, and the caption is docked over everything inside the
-padding. `Overlay.inner` subtracts it before fitting the font, so the text sizes
-to the cyan area rather than the whole window.
+The whole banner is one picture. `Overlay.draw` paints it with GDI+ into a 32-bit
+bitmap - orange rounded body, cyan rounded face inset by the 20px border, caption on
+top - and `Overlay.present` hands that bitmap to Windows with `UpdateLayeredWindow`.
+There are no child controls. Everything outside the orange is fully transparent, and
+DWM composites the bitmap over the desktop using its alpha channel.
 
-The corners are rounded by `SetWindowRgn`, not by painting. A window region is the
-shape Windows lets the window occupy at all - everything outside it is neither drawn
-nor clickable. It is remade only when the banner's *size* changes, for the same reason
-the font is: it is a GDI object, and the banner moves between monitors far more often
-than it changes size.
+That is what makes it look smooth rather than rasterized, and both halves were needed:
 
-Both edges of the border are rounded, which takes two regions rather than one. A
-region applies to a child control exactly as it does to a top-level window, so the
-caption gets its own: clipping its corners lets the form behind it - the orange - show
-through them. The inner radius is the outer minus the border width, which is what
-makes the two arcs concentric and keeps the ring a uniform 20px the whole way round.
-Any larger and it pinches thin at the corners, any smaller and it bulges:
+* **The text.** WinForms' `Label` draws with GDI, and GDI does not antialias text this
+  large at all: the curves of "S" and "pp" come out as hard pixel steps. GDI+ with
+  `TextRenderingHint.AntiAlias` smooths every edge. Unhinted rather than `GridFit`,
+  since hinting is for small text and only distorts glyphs at display sizes.
+
+* **The corners.** They used to be window regions (`SetWindowRgn`), and a region can
+  only include or exclude whole pixels, so its arcs were stepped. A layered window
+  (`WS_EX_LAYERED`) gets per-pixel alpha instead, so the antialiased edge pixels are
+  partly transparent and fade into whatever is behind them.
+
+The inner radius is the outer minus the border width, which is what makes the two arcs
+concentric and keeps the ring a uniform 20px the whole way round. Any larger and it
+pinches thin at the corners, any smaller and it bulges:
 
 | | radius | size |
 |---|---|---|
 | banner | 26 | 1440x216 |
-| caption | 6 | 1400x176 |
+| cyan face | 6 | 1400x176 |
 
-They are applied together and latched together - a rounded outside around a square
-inside reads as a bug rather than as a style, so a refusal of either is retried on the
-next show.
+Things to know about the layered window:
 
-Two things to know about it:
+* **It shows nothing until it has been given a picture**, and giving it one needs a
+  real HWND. `create` forces the handle, then presents.
 
-* **The system takes ownership on success.** After `SetWindowRgn` returns non-zero the
-  region handle belongs to Windows - it must not be deleted or set again, and Windows
-  frees whatever region was there before. On *failure* it is still ours, and a missing
-  `DeleteObject` on that path leaks a GDI object every time the banner is shown.
+* **The bitmap must be premultiplied** - each colour channel already scaled by its
+  alpha. `Bitmap.GetHbitmap` produces exactly that.
 
-* **There is no antialiasing.** A region clips whole pixels, so the arcs are stepped
-  rather than smooth. At a 26px radius against a 20px orange border it reads as
-  rounded; up close the steps are visible. Smooth corners would need a layered window
-  drawn with per-pixel alpha (`UpdateLayeredWindow`), which is a different design for
-  this module - the border would stop being `Padding` and become something painted.
+* **`UpdateLayeredWindow` runs on every show**, with the cached picture. It sets
+  position and size along with the bitmap, so the window can never be left one size
+  with a picture of another - which a DPI change on the way to a different monitor
+  could otherwise do. The picture itself is redrawn only when the size changes.
+
+* **`PixelOffsetMode.HighQuality`.** Without it GDI+ treats each pixel's centre as
+  its corner, and a fill from 0 to `Width` half-covers the pixels along its straight
+  edges - a faint translucent line all the way round.
 
 Two things about it matter more than they look:
 
@@ -721,7 +725,7 @@ Two things about it matter more than they look:
   `ShowWithoutActivation` and uses `SW_SHOWNOACTIVATE`.
 
 * **The font is measured in pixels, not points** (`GraphicsUnit.Pixel`), starting
-  at 60% of the banner height and shrinking by 8% until it fits. Points would
+  at 60% of the cyan face's height and shrinking by 8% until it fits. Points would
   scale a second time on a high-DPI display and overflow the box. The banner is
   much wider than the text is at any size, so height is the binding constraint,
   and the fit leaves about 18% of it as padding.
@@ -730,23 +734,10 @@ The window is built once at startup, not on first use: creating a window inside
 the hook callback would be slow, and a low-level hook has to return promptly or
 Windows stops calling it.
 
-## The font is never disposed - this one bites
-
-`Overlay.applyFont` refits only when the banner's *size* changes, and no font handed
-to the caption is ever disposed. That looks wasteful and is not:
-
-`Control.Font` compares by value. Two separately-created fonts of the same family,
-size, style and unit are `Equals`, and the setter **ignores an assignment it considers
-unchanged, keeping the old object**. So a same-size refit leaves the label still
-holding the font you were about to release. Dispose it and the next paint is a GDI+
-`ArgumentException: Parameter is not valid` inside `Label.OnPaint`, which WinForms
-renders as the white box with a red X (`Control.PaintWithErrorHandling`) and which
-then takes the process down.
-
-Two monitors of equal size are all it takes to reach it: the banner moves between
-them, so its origin changes while its size does not - the refit runs, produces an
-equal font, and the assignment quietly does nothing. On a single monitor it never
-happens, which is what makes it look intermittent.
+The process declares itself per-monitor DPI aware (`Application.SetHighDpiMode` in
+`Program.fs`). Without that Windows draws it at 96 DPI and bitmap-stretches the
+result on a scaled display. C# projects get this from the `ApplicationHighDpiMode`
+property through a source generator that F# does not have.
 
 ## Notes on the design
 

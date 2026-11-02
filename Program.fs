@@ -37,6 +37,14 @@ let main _ =
 
     Application.ThreadException.Add(fun args -> Log.write "ui thread" args.Exception)
 
+    // Without this the process is DPI-unaware: Windows renders every window at 96 DPI
+    // and bitmap-stretches it to the monitor's scaling, so the banner's text comes out
+    // soft and blocky. C# projects get this from the ApplicationHighDpiMode property via
+    // a source generator, which F# does not have, so it has to be said here - before
+    // any window exists. Per-monitor v2 also stops GetWindowRect being virtualised,
+    // which keeps it in the same physical pixels DWM's frame bounds are reported in.
+    Application.SetHighDpiMode(HighDpiMode.PerMonitorV2) |> ignore
+
     // A named Mutex is a kernel object visible to every process on the machine, so
     // asking for one by name is the standard single-instance check: whoever creates it
     // first is told so, and everyone else knows a copy is already running. `use` keeps
